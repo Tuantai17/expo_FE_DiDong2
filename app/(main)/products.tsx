@@ -20,24 +20,27 @@ import { Ionicons } from "@expo/vector-icons";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
-  ActivityIndicator,
-  Dimensions,
-  FlatList,
-  Image,
-  Platform,
-  RefreshControl,
-  SafeAreaView,
-  ScrollView,
-  StyleSheet,
-  Text,
-  TextInput,
-  TouchableOpacity,
-  View,
+    ActivityIndicator,
+    Dimensions,
+    FlatList,
+    Image,
+    Platform,
+    Pressable,
+    RefreshControl,
+    SafeAreaView,
+    ScrollView,
+    StyleSheet,
+    Text,
+    TextInput,
+    TouchableOpacity,
+    View,
 } from "react-native";
 
 import HomeHeader from "../../components/home/HomeHeader";
+import { useCart } from "../../context/CartContext";
 import { useFavorite } from "../../context/FavoriteContext";
 import { api, BASE_URL } from "../../services/api";
+import haptics from "../../utils/haptics";
 
 // =================== CONSTANTS =====================
 
@@ -139,7 +142,8 @@ export default function ProductsScreen() {
   const isInitialMount = useRef(true);
   const debounceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Favorites hook
+  // Context hooks
+  const { addToCart } = useCart();
   const { isFavorite, toggleFavorite } = useFavorite();
 
   // =================== API FUNCTIONS =====================
@@ -373,52 +377,65 @@ export default function ProductsScreen() {
   );
 
   const renderCategories = () => (
-    <ScrollView
-      horizontal
-      showsHorizontalScrollIndicator={false}
-      contentContainerStyle={styles.categoriesContainer}
-    >
-      {/* "All" button */}
-      <TouchableOpacity
-        style={[
-          styles.categoryChip,
-          activeCategory === null && styles.categoryChipActive,
-        ]}
-        onPress={() => handleCategorySelect(null)}
-        activeOpacity={0.7}
+    <View style={styles.categoriesWrapper}>
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        contentContainerStyle={styles.categoriesContainer}
       >
-        <Text
-          style={[
-            styles.categoryChipText,
-            activeCategory === null && styles.categoryChipTextActive,
-          ]}
-        >
-          Tất cả
-        </Text>
-      </TouchableOpacity>
-
-      {/* Category chips */}
-      {categories.map((category) => (
-        <TouchableOpacity
-          key={category.id}
-          style={[
+        {/* "All" button */}
+        <Pressable
+          style={({ pressed }) => [
             styles.categoryChip,
-            activeCategory === category.id && styles.categoryChipActive,
+            activeCategory === null && styles.categoryChipActive,
+            pressed && { opacity: 0.8 },
           ]}
-          onPress={() => handleCategorySelect(category.id)}
-          activeOpacity={0.7}
+          onPress={() => {
+            haptics.buttonPress();
+            handleCategorySelect(null);
+          }}
         >
+          <Ionicons 
+            name="apps" 
+            size={14} 
+            color={activeCategory === null ? "#FFFFFF" : COLORS.textSecondary} 
+          />
           <Text
             style={[
               styles.categoryChipText,
-              activeCategory === category.id && styles.categoryChipTextActive,
+              activeCategory === null && styles.categoryChipTextActive,
             ]}
           >
-            {category.name}
+            Tất cả
           </Text>
-        </TouchableOpacity>
-      ))}
-    </ScrollView>
+        </Pressable>
+
+        {/* Category chips */}
+        {categories.map((category) => (
+          <Pressable
+            key={category.id}
+            style={({ pressed }) => [
+              styles.categoryChip,
+              activeCategory === category.id && styles.categoryChipActive,
+              pressed && { opacity: 0.8 },
+            ]}
+            onPress={() => {
+              haptics.buttonPress();
+              handleCategorySelect(category.id);
+            }}
+          >
+            <Text
+              style={[
+                styles.categoryChipText,
+                activeCategory === category.id && styles.categoryChipTextActive,
+              ]}
+            >
+              {category.name}
+            </Text>
+          </Pressable>
+        ))}
+      </ScrollView>
+    </View>
   );
 
   const renderSortBar = () => (
@@ -653,22 +670,52 @@ const styles = StyleSheet.create({
     fontSize: 15,
     color: COLORS.text,
   },
+  categoriesWrapper: {
+    backgroundColor: COLORS.background,
+    paddingVertical: 8,
+    marginBottom: 4,
+  },
   categoriesContainer: {
     paddingHorizontal: PADDING,
-    paddingBottom: 16,
+    paddingVertical: 4,
     gap: 10,
   },
   categoryChip: {
-    paddingHorizontal: 20,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 16,
     paddingVertical: 10,
-    borderRadius: 25,
+    borderRadius: 20,
     backgroundColor: COLORS.card,
     borderWidth: 1.5,
     borderColor: COLORS.border,
+    ...Platform.select({
+      ios: {
+        shadowColor: "#000",
+        shadowOpacity: 0.05,
+        shadowRadius: 4,
+        shadowOffset: { width: 0, height: 2 },
+      },
+      android: {
+        elevation: 2,
+      },
+    }),
   },
   categoryChipActive: {
     backgroundColor: COLORS.primary,
     borderColor: COLORS.primary,
+    ...Platform.select({
+      ios: {
+        shadowColor: COLORS.primary,
+        shadowOpacity: 0.3,
+        shadowRadius: 8,
+        shadowOffset: { width: 0, height: 4 },
+      },
+      android: {
+        elevation: 4,
+      },
+    }),
   },
   categoryChipText: {
     fontSize: 13,
@@ -677,6 +724,7 @@ const styles = StyleSheet.create({
   },
   categoryChipTextActive: {
     color: "#FFFFFF",
+    fontWeight: "700",
   },
   sortBar: {
     flexDirection: "row",

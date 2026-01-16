@@ -40,7 +40,15 @@ export const ENDPOINTS = {
     // Order endpoints
     orders: `${API_BASE_URL}/api/orders`,
     orderById: (id: number) => `${API_BASE_URL}/api/orders/${id}`,
+    orderItems: (id: number) => `${API_BASE_URL}/api/orders/${id}/items`,
+    cancelOrder: (id: number) => `${API_BASE_URL}/api/orders/${id}/cancel`,
     checkout: `${API_BASE_URL}/api/orders/checkout`,
+
+    // Chat endpoints
+    chatSessions: `${API_BASE_URL}/api/chat/sessions`,
+    chatSession: (id: number) => `${API_BASE_URL}/api/chat/sessions/${id}`,
+    chatMessages: (sessionId: number) => `${API_BASE_URL}/api/chat/sessions/${sessionId}/messages`,
+    chatRead: (sessionId: number) => `${API_BASE_URL}/api/chat/sessions/${sessionId}/read`,
 
     // Image URL helper
     imageUrl: (filename: string) => {
@@ -51,4 +59,3 @@ export const ENDPOINTS = {
 };
 
 export default ENDPOINTS;
-

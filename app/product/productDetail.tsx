@@ -9,41 +9,29 @@ import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import React, { useEffect, useState } from "react";
 import {
-  ActivityIndicator,
-  Dimensions,
-  Image,
-  Platform,
-  RefreshControl,
-  SafeAreaView,
-  ScrollView,
-  StyleSheet,
-  Text,
-  TouchableOpacity,
-  View,
+    ActivityIndicator,
+    Dimensions,
+    FlatList,
+    Image,
+    Platform,
+    RefreshControl,
+    SafeAreaView,
+    ScrollView,
+    StyleSheet,
+    Text,
+    TouchableOpacity,
+    View
 } from "react-native";
+import ProductReviewsSection from "../../components/review/ProductReviewsSection";
+import { ProductDetailSkeleton } from "../../components/ui/SkeletonLoader";
 import { useCart } from "../../context/CartContext";
 import { useFavorite } from "../../context/FavoriteContext";
-import { getImageUrl, getProductDetail } from "../../services/api";
+import { getImageUrl, getProductDetail, getProductsByCategory, Product } from "../../services/api";
 import { showSuccessAlert } from "../../utils/alert";
+import haptics from "../../utils/haptics";
 
 const SCREEN_WIDTH = Dimensions.get("window").width;
 const SIZES = [38, 39, 40, 41, 42, 43];
-
-// =================== TYPES =====================
-
-type Product = {
-  id: number;
-  title: string;
-  price: number;
-  photo: string;
-  description?: string;
-  qty?: number;
-  categoryId?: number;
-  category?: {
-    id: number;
-    name: string;
-  };
-};
 
 // =================== COMPONENT =====================
 
@@ -59,6 +47,10 @@ export default function ProductDetailScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [selectedSize, setSelectedSize] = useState<number>(40);
   const [quantity, setQuantity] = useState(1);
+  
+  // Related Products State
+  const [relatedProducts, setRelatedProducts] = useState<Product[]>([]);
+  const [loadingRelated, setLoadingRelated] = useState(false);
 
   const productId = Number(id) || 1;
   const isLiked = product ? isFavorite(product.id.toString()) : false;
@@ -68,6 +60,13 @@ export default function ProductDetailScreen() {
   useEffect(() => {
     loadProductDetail();
   }, [productId]);
+
+  // Load related products when product changes
+  useEffect(() => {
+    if (product?.categoryId || product?.category?.id) {
+      loadRelatedProducts();
+    }
+  }, [product?.categoryId, product?.category?.id]);
 
   // =================== FUNCTIONS =====================
 
@@ -86,6 +85,34 @@ export default function ProductDetailScreen() {
     }
   };
 
+  const loadRelatedProducts = async () => {
+    const categoryId = product?.categoryId || product?.category?.id;
+    if (!categoryId) {
+      console.log("⚠️ No category ID for related products");
+      return;
+    }
+    
+    try {
+      setLoadingRelated(true);
+      console.log("📤 Fetching related products for category:", categoryId);
+      const data = await getProductsByCategory(categoryId, 10);
+      console.log("📦 Related products received:", data);
+      
+      // Filter out current product and limit to 8 products
+      const filtered = data
+        .filter(p => p.id !== productId)
+        .slice(0, 8);
+      
+      console.log("[Products] Loaded:", filtered.length, "products");
+      setRelatedProducts(filtered);
+    } catch (error) {
+      console.log("❌ Load related products failed:", error);
+      setRelatedProducts([]);
+    } finally {
+      setLoadingRelated(false);
+    }
+  };
+
   const onRefresh = async () => {
     setRefreshing(true);
     await loadProductDetail();
@@ -99,6 +126,7 @@ export default function ProductDetailScreen() {
   const handleAddToCart = () => {
     if (!product) return;
 
+    haptics.addToCart();
     addToCart({
       id: product.id.toString(),
       productId: product.id,  // Thêm productId cho API
@@ -119,6 +147,7 @@ export default function ProductDetailScreen() {
   const handleBuyNow = () => {
     if (!product) return;
 
+    haptics.addToCart();
     addToCart({
       id: product.id.toString(),
       productId: product.id,  // Thêm productId cho API
@@ -134,6 +163,7 @@ export default function ProductDetailScreen() {
 
   const handleFavoritePress = () => {
     if (!product) return;
+    haptics.addFavorite();
     toggleFavorite({
       id: product.id.toString(),
       tag: getCategoryName(),
@@ -158,12 +188,14 @@ export default function ProductDetailScreen() {
   const increaseQty = () => {
     const maxQty = product?.qty || 10;
     if (quantity < maxQty) {
+      haptics.increaseQty();
       setQuantity(quantity + 1);
     }
   };
 
   const decreaseQty = () => {
     if (quantity > 1) {
+      haptics.decreaseQty();
       setQuantity(quantity - 1);
     }
   };
@@ -173,10 +205,17 @@ export default function ProductDetailScreen() {
   if (loading) {
     return (
       <SafeAreaView style={styles.screen}>
-        <View style={styles.center}>
-          <ActivityIndicator size="large" color="#5B9EE1" />
-          <Text style={styles.loadingText}>Đang tải sản phẩm...</Text>
+        <View style={styles.header}>
+          <TouchableOpacity
+            style={styles.headerButton}
+            onPress={() => router.back()}
+          >
+            <Ionicons name="chevron-back" size={22} color="#0F172A" />
+          </TouchableOpacity>
+          <Text style={styles.headerTitle}>Chi tiết sản phẩm</Text>
+          <View style={styles.headerButton} />
         </View>
+        <ProductDetailSkeleton />
       </SafeAreaView>
     );
   }
@@ -325,7 +364,10 @@ export default function ProductDetailScreen() {
                   <TouchableOpacity
                     key={size}
                     style={[styles.sizeItem, isActive && styles.sizeItemActive]}
-                    onPress={() => setSelectedSize(size)}
+                    onPress={() => {
+                      haptics.sizeSelect();
+                      setSelectedSize(size);
+                    }}
                   >
                     <Text style={[styles.sizeText, isActive && styles.sizeTextActive]}>
                       {size}
@@ -363,6 +405,71 @@ export default function ProductDetailScreen() {
             </View>
           </View>
         </View>
+
+        {/* Related Products Section */}
+        {(relatedProducts.length > 0 || loadingRelated) && (
+          <View style={styles.relatedSection}>
+            <View style={styles.relatedHeader}>
+              <Text style={styles.relatedTitle}>Sản phẩm liên quan</Text>
+              <TouchableOpacity 
+                onPress={() => {
+                  const categoryId = product?.categoryId || product?.category?.id;
+                  if (categoryId) {
+                    router.push(`/search?categoryId=${categoryId}` as any);
+                  }
+                }}
+              >
+                <Text style={styles.seeAllText}>Xem tất cả</Text>
+              </TouchableOpacity>
+            </View>
+            
+            {loadingRelated ? (
+              <View style={styles.relatedLoading}>
+                <ActivityIndicator size="small" color="#5B9EE1" />
+                <Text style={styles.loadingText}>Đang tải sản phẩm...</Text>
+              </View>
+            ) : (
+              <FlatList
+                data={relatedProducts}
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                keyExtractor={(item) => item.id.toString()}
+                contentContainerStyle={styles.relatedList}
+                renderItem={({ item }) => (
+                  <TouchableOpacity
+                    style={styles.relatedCard}
+                    onPress={() => {
+                      router.push(`/product/productDetail?id=${item.id}`);
+                    }}
+                    activeOpacity={0.8}
+                  >
+                    <View style={styles.relatedImageWrapper}>
+                      <Image
+                        source={{ uri: getImageUrl(item.photo) }}
+                        style={styles.relatedImage}
+                        resizeMode="contain"
+                      />
+                    </View>
+                    <View style={styles.relatedInfo}>
+                      <Text style={styles.relatedBrand} numberOfLines={1}>
+                        {item.brand || item.category?.name || ""}
+                      </Text>
+                      <Text style={styles.relatedName} numberOfLines={2}>
+                        {item.title}
+                      </Text>
+                      <Text style={styles.relatedPrice}>
+                        {formatPrice(item.price)}
+                      </Text>
+                    </View>
+                  </TouchableOpacity>
+                )}
+              />
+            )}
+          </View>
+        )}
+
+        {/* Product Reviews Section */}
+        <ProductReviewsSection productId={productId} />
       </ScrollView>
 
       {/* Bottom Action Bar */}
@@ -778,5 +885,101 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: "600",
     color: "#FFFFFF",
+  },
+
+  // Related Products Section
+  relatedSection: {
+    marginTop: 16,
+    backgroundColor: "#FFFFFF",
+    borderRadius: 24,
+    padding: 20,
+    ...Platform.select({
+      ios: {
+        shadowColor: "#000",
+        shadowOpacity: 0.06,
+        shadowRadius: 12,
+        shadowOffset: { width: 0, height: 4 },
+      },
+      android: {
+        elevation: 2,
+      },
+    }),
+  },
+  relatedHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 16,
+  },
+  relatedTitle: {
+    fontSize: 17,
+    fontWeight: "700",
+    color: "#0F172A",
+  },
+  seeAllText: {
+    fontSize: 13,
+    fontWeight: "600",
+    color: "#5B9EE1",
+  },
+  relatedLoading: {
+    padding: 40,
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 12,
+  },
+  relatedList: {
+    paddingRight: 16,
+    gap: 12,
+  },
+  relatedCard: {
+    width: 150,
+    backgroundColor: "#F8FAFC",
+    borderRadius: 16,
+    overflow: "hidden",
+    ...Platform.select({
+      ios: {
+        shadowColor: "#5B9EE1",
+        shadowOpacity: 0.1,
+        shadowRadius: 8,
+        shadowOffset: { width: 0, height: 2 },
+      },
+      android: {
+        elevation: 2,
+      },
+    }),
+  },
+  relatedImageWrapper: {
+    width: "100%",
+    height: 120,
+    backgroundColor: "#FFFFFF",
+    alignItems: "center",
+    justifyContent: "center",
+    padding: 10,
+  },
+  relatedImage: {
+    width: "100%",
+    height: "100%",
+  },
+  relatedInfo: {
+    padding: 12,
+    gap: 4,
+  },
+  relatedBrand: {
+    fontSize: 10,
+    fontWeight: "500",
+    color: "#5B9EE1",
+    textTransform: "uppercase",
+  },
+  relatedName: {
+    fontSize: 13,
+    fontWeight: "600",
+    color: "#0F172A",
+    lineHeight: 18,
+  },
+  relatedPrice: {
+    fontSize: 14,
+    fontWeight: "700",
+    color: "#EF4444",
+    marginTop: 4,
   },
 });

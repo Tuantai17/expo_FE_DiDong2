@@ -10,6 +10,7 @@ import { useLocalSearchParams, useRouter } from "expo-router";
 import React, { useEffect, useState } from "react";
 import {
     ActivityIndicator,
+    Alert,
     Image,
     Modal,
     Platform,
@@ -17,9 +18,9 @@ import {
     StyleSheet,
     Text,
     TouchableOpacity,
-    View,
+    View
 } from "react-native";
-import { api, BASE_URL } from "../../services/api";
+import { api, BASE_URL, retryPaymentApi } from "../../services/api";
 
 // =================== TYPES =====================
 
@@ -37,33 +38,6 @@ type OrderItemFromAPI = {
 };
 
 // =================== CONSTANTS =====================
-
-const ORDER_STEPS = [
-    {
-        key: "pending",
-        label: "Đơn hàng đã xác nhận",
-        description: "Chúng tôi đã nhận được đơn hàng của bạn.",
-        icon: "checkmark-circle",
-    },
-    {
-        key: "processing",
-        label: "Đang chuẩn bị hàng",
-        description: "Sản phẩm đang được đóng gói cẩn thận.",
-        icon: "cube",
-    },
-    {
-        key: "shipped",
-        label: "Đang giao hàng",
-        description: "Đơn hàng đang trên đường đến bạn.",
-        icon: "bicycle",
-    },
-    {
-        key: "delivered",
-        label: "Đã giao hàng",
-        description: "Đơn hàng đã được giao thành công.",
-        icon: "home",
-    },
-];
 
 type PaymentMethodType = "cod" | "card" | "momo" | "vnpay";
 
@@ -84,6 +58,7 @@ export default function OrderStatusScreen() {
     const [showProductsModal, setShowProductsModal] = useState(false);
     const [orderItems, setOrderItems] = useState<OrderItemFromAPI[]>([]);
     const [loadingItems, setLoadingItems] = useState(false);
+    const [loadingRetry, setLoadingRetry] = useState(false);
 
     // Parse params with defaults
     const total = Number(params.total) || 0;
@@ -94,6 +69,56 @@ export default function OrderStatusScreen() {
 
     // Extract numeric order ID from string like "#ORD-5"
     const numericOrderId = orderId.replace(/\D/g, "");
+
+    // Check if this is a pending online payment (VNPay/MoMo)
+    const isPendingOnlinePayment = status === 'pending' && 
+        (paymentMethod?.toLowerCase().includes('vnpay') || paymentMethod?.toLowerCase().includes('momo'));
+
+    // Dynamic steps based on payment status
+    const getSteps = () => {
+        const baseSteps = [
+            {
+                key: "pending",
+                label: "Đơn hàng đã xác nhận",
+                description: "Chúng tôi đã nhận được đơn hàng của bạn.",
+                icon: "checkmark-circle",
+            },
+            {
+                key: "processing",
+                label: "Đang chuẩn bị hàng",
+                description: "Sản phẩm đang được đóng gói cẩn thận.",
+                icon: "cube",
+            },
+            {
+                key: "shipped",
+                label: "Đang giao hàng",
+                description: "Đơn hàng đang trên đường đến bạn.",
+                icon: "bicycle",
+            },
+            {
+                key: "delivered",
+                label: "Đã giao hàng",
+                description: "Đơn hàng đã được giao thành công.",
+                icon: "home",
+            },
+        ];
+
+        if (isPendingOnlinePayment) {
+            return [
+                {
+                    key: "payment_pending",
+                    label: "Chờ thanh toán",
+                    description: "Vui lòng thanh toán để hoàn tất đơn hàng.",
+                    icon: "time"
+                },
+                ...baseSteps
+            ];
+        }
+
+        return baseSteps;
+    };
+
+    const steps = getSteps();
 
     // =================== HELPERS =====================
 
@@ -112,6 +137,8 @@ export default function OrderStatusScreen() {
     };
 
     const getStepIndex = (orderStatus: string): number => {
+        if (isPendingOnlinePayment) return 0;
+
         const statusMap: Record<string, string> = {
             pending: "pending",
             confirmed: "pending",
@@ -124,7 +151,9 @@ export default function OrderStatusScreen() {
             cancelled: "pending",
         };
         const mappedStatus = statusMap[orderStatus.toLowerCase()] || "pending";
-        const stepKeys = ORDER_STEPS.map((s) => s.key);
+        // Find index in baseSteps (which are consistent with mapping keys)
+        // If isPendingOnlinePayment is false, steps == baseSteps
+        const stepKeys = steps.map((s) => s.key);
         const index = stepKeys.indexOf(mappedStatus);
         return index >= 0 ? index : 0;
     };
@@ -146,6 +175,7 @@ export default function OrderStatusScreen() {
         if (photo.startsWith("http")) return photo;
         return `${BASE_URL}/images/${photo}`;
     };
+
 
     // =================== API CALLS =====================
 
@@ -170,6 +200,40 @@ export default function OrderStatusScreen() {
     };
 
     // =================== HANDLERS =====================
+
+    const handleRetryPayment = async () => {
+        if (!numericOrderId) return;
+        setLoadingRetry(true);
+        try {
+            const res = await retryPaymentApi(Number(numericOrderId));
+            if (res.success && res.payUrl) {
+                // On web, navigate to VNPay URL in same window (like mobile app experience)
+                // On native, use WebView
+                if (Platform.OS === 'web') {
+                    // Navigate in same window for app-like experience
+                    window.location.href = res.payUrl;
+                } else {
+                    // Navigate to WebView on native
+                    router.push({
+                       pathname: "/product/vnpay-webview",
+                       params: { 
+                           paymentUrl: res.payUrl,
+                           orderId: numericOrderId,
+                           amount: total.toString()
+                       }
+                    });
+                }
+            } else {
+                Alert.alert("Lỗi", res.message || "Không thể tạo thanh toán");
+            }
+        } catch (e: any) {
+             console.error("Retry payment error:", e);
+             const errorMessage = e.response?.data?.message || "Đã có lỗi xảy ra khi tạo thanh toán";
+             Alert.alert("Lỗi", errorMessage);
+        } finally {
+            setLoadingRetry(false);
+        }
+    };
 
     const handleContinueShopping = () => {
         router.push("/(main)/products");
@@ -229,13 +293,24 @@ export default function OrderStatusScreen() {
             >
                 {/* Order Summary Card */}
                 <View style={styles.card}>
-                    <View style={styles.successIconCircle}>
-                        <Ionicons name="checkmark" size={32} color="#FFFFFF" />
+                    <View style={[
+                        styles.successIconCircle, 
+                        isPendingOnlinePayment && { backgroundColor: '#F97316' }
+                    ]}>
+                        <Ionicons 
+                            name={isPendingOnlinePayment ? "time-outline" : "checkmark"} 
+                            size={32} 
+                            color="#FFFFFF" 
+                        />
                     </View>
 
-                    <Text style={styles.title}>Đặt hàng thành công!</Text>
+                    <Text style={styles.title}>
+                        {isPendingOnlinePayment ? "Chờ thanh toán" : "Đặt hàng thành công!"}
+                    </Text>
                     <Text style={styles.subtitle}>
-                        Cảm ơn bạn! Đơn hàng của bạn đã được xác nhận.
+                        {isPendingOnlinePayment 
+                            ? "Đơn hàng chưa được thanh toán. Vui lòng thanh toán để hoàn tất đặt hàng."
+                            : "Cảm ơn bạn! Đơn hàng của bạn đã được xác nhận."}
                     </Text>
 
                     {/* Summary Stats - Clickable */}
@@ -304,7 +379,7 @@ export default function OrderStatusScreen() {
                         <Text style={styles.cardHeaderText}>Tiến độ giao hàng</Text>
                     </View>
 
-                    {ORDER_STEPS.map((step, index) => {
+                    {steps.map((step, index) => {
                         const isActive = index === currentIndex;
                         const isCompleted = index < currentIndex;
 
@@ -324,7 +399,7 @@ export default function OrderStatusScreen() {
                                             <View style={styles.stepCircleDot} />
                                         ) : null}
                                     </View>
-                                    {index !== ORDER_STEPS.length - 1 && (
+                                    {index !== steps.length - 1 && (
                                         <View
                                             style={[
                                                 styles.stepLine,
@@ -365,12 +440,36 @@ export default function OrderStatusScreen() {
 
                 {/* Action Buttons */}
                 <View style={styles.buttonsContainer}>
+                    {isPendingOnlinePayment && (
+                         <TouchableOpacity
+                            style={[styles.primaryButton, { marginBottom: 12, backgroundColor: '#F97316' }]}
+                            onPress={handleRetryPayment}
+                            disabled={loadingRetry}
+                        >
+                            {loadingRetry ? (
+                                <ActivityIndicator color="white" />
+                            ) : (
+                                <>
+                                    <Ionicons name="card-outline" size={20} color="#FFFFFF" />
+                                    <Text style={styles.primaryButtonText}>Thanh toán lại</Text>
+                                </>
+                            )}
+                        </TouchableOpacity>
+                    )}
+
                     <TouchableOpacity
-                        style={styles.primaryButton}
+                        style={isPendingOnlinePayment ? styles.secondaryButton : styles.primaryButton}
                         onPress={handleContinueShopping}
+                        disabled={loadingRetry}
                     >
-                        <Ionicons name="storefront-outline" size={20} color="#FFFFFF" />
-                        <Text style={styles.primaryButtonText}>Tiếp tục mua sắm</Text>
+                        <Ionicons 
+                            name="storefront-outline" 
+                            size={20} 
+                            color={isPendingOnlinePayment ? "#5B9EE1" : "#FFFFFF"} 
+                        />
+                        <Text style={isPendingOnlinePayment ? styles.secondaryButtonText : styles.primaryButtonText}>
+                            Tiếp tục mua sắm
+                        </Text>
                     </TouchableOpacity>
 
                     <TouchableOpacity

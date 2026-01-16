@@ -2,18 +2,19 @@
 /**
  * Edit Profile Screen
  * ==================
- * Cho phép user chỉnh sửa thông tin cá nhân và lưu về database
+ * Cho phép user chỉnh sửa tên, email, phone và avatar
  */
 
 import { Ionicons } from "@expo/vector-icons";
 import * as ImagePicker from "expo-image-picker";
 import { useRouter } from "expo-router";
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import {
     ActivityIndicator,
     Alert,
     Image,
     KeyboardAvoidingView,
+    Modal,
     Platform,
     ScrollView,
     StyleSheet,
@@ -22,27 +23,38 @@ import {
     TouchableOpacity,
     View,
 } from "react-native";
+import { API_BASE_URL } from "../../config/api.config";
 import { useAuth } from "../../context/AuthContext";
-import { updateUserProfile } from "../../services/api";
+import { updateUserProfile, uploadAvatar } from "../../services/api";
 
 export default function EditProfileScreen() {
     const router = useRouter();
     const { user, refreshUser, isAuthenticated } = useAuth();
+    const fileInputRef = useRef<HTMLInputElement>(null);
 
-    // Form states - Load từ user context
+    // Form states
     const [name, setName] = useState("");
     const [email, setEmail] = useState("");
+    const [phoneNumber, setPhoneNumber] = useState("");
     const [avatar, setAvatar] = useState<string | null>(null);
 
     // UI states
     const [isSaving, setIsSaving] = useState(false);
+    const [isUploadingAvatar, setIsUploadingAvatar] = useState(false);
     const [isLoading, setIsLoading] = useState(true);
+    const [showSuccessModal, setShowSuccessModal] = useState(false);
+    const [successMessage, setSuccessMessage] = useState("");
 
     // Load user data khi component mount
     useEffect(() => {
         if (user) {
             setName(user.name || user.fullName || user.username || "");
             setEmail(user.email || "");
+            setPhoneNumber(user.phoneNumber || "");
+            // Set avatar URL nếu có
+            if (user.avatar) {
+                setAvatar(`${API_BASE_URL}${user.avatar}`);
+            }
             setIsLoading(false);
         } else {
             setIsLoading(false);
@@ -52,15 +64,79 @@ export default function EditProfileScreen() {
     // Redirect nếu chưa đăng nhập
     useEffect(() => {
         if (!isAuthenticated && !isLoading) {
-            Alert.alert(
-                "Chưa đăng nhập",
-                "Vui lòng đăng nhập để chỉnh sửa hồ sơ",
-                [{ text: "OK", onPress: () => router.replace("/(auth)/login") }]
-            );
+            if (Platform.OS === 'web') {
+                setSuccessMessage("Vui lòng đăng nhập để chỉnh sửa hồ sơ");
+                setTimeout(() => router.replace("/(auth)/login"), 1500);
+            } else {
+                Alert.alert(
+                    "Chưa đăng nhập",
+                    "Vui lòng đăng nhập để chỉnh sửa hồ sơ",
+                    [{ text: "OK", onPress: () => router.replace("/(auth)/login") }]
+                );
+            }
         }
     }, [isAuthenticated, isLoading]);
 
+    // Handle web file input
+    const handleWebFileSelect = async (event: React.ChangeEvent<HTMLInputElement>) => {
+        const file = event.target.files?.[0];
+        if (!file || !user?.id) return;
+
+        // Create preview
+        const reader = new FileReader();
+        reader.onload = (e) => {
+            setAvatar(e.target?.result as string);
+        };
+        reader.readAsDataURL(file);
+
+        // Upload file
+        setIsUploadingAvatar(true);
+        try {
+            const formData = new FormData();
+            formData.append('file', file);
+
+            const response = await uploadAvatar(user.id, formData);
+            
+            // Cập nhật avatar URL mới
+            setAvatar(`${API_BASE_URL}${response.avatar}`);
+            
+            // Refresh user data
+            await refreshUser();
+
+            // showSuccess("Cập nhật ảnh đại diện thành công!");
+        } catch (error: any) {
+            console.error("Upload avatar error:", error);
+            showError(error.response?.data?.error || "Không thể upload ảnh");
+        } finally {
+            setIsUploadingAvatar(false);
+        }
+    };
+
+    const showSuccess = (message: string) => {
+        if (Platform.OS === 'web') {
+            setSuccessMessage(message);
+            setShowSuccessModal(true);
+        } else {
+            Alert.alert("Thành công", message);
+        }
+    };
+
+    const showError = (message: string) => {
+        if (Platform.OS === 'web') {
+            setSuccessMessage("❌ " + message);
+            setShowSuccessModal(true);
+        } else {
+            Alert.alert("Lỗi", message);
+        }
+    };
+
     const pickImage = async () => {
+        // On web, use file input
+        if (Platform.OS === 'web') {
+            fileInputRef.current?.click();
+            return;
+        }
+
         const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
         if (status !== "granted") {
             Alert.alert(
@@ -79,10 +155,17 @@ export default function EditProfileScreen() {
 
         if (!result.canceled && result.assets[0]) {
             setAvatar(result.assets[0].uri);
+            await uploadAvatarImage(result.assets[0]);
         }
     };
 
     const takePhoto = async () => {
+        // Camera not available on web
+        if (Platform.OS === 'web') {
+            fileInputRef.current?.click();
+            return;
+        }
+
         const { status } = await ImagePicker.requestCameraPermissionsAsync();
         if (status !== "granted") {
             Alert.alert(
@@ -100,31 +183,71 @@ export default function EditProfileScreen() {
 
         if (!result.canceled && result.assets[0]) {
             setAvatar(result.assets[0].uri);
+            await uploadAvatarImage(result.assets[0]);
+        }
+    };
+
+    const uploadAvatarImage = async (asset: ImagePicker.ImagePickerAsset) => {
+        if (!user?.id) return;
+
+        setIsUploadingAvatar(true);
+        try {
+            // Tạo FormData
+            const formData = new FormData();
+            const filename = asset.uri.split('/').pop() || 'avatar.jpg';
+            const match = /\.(\w+)$/.exec(filename);
+            const type = match ? `image/${match[1]}` : 'image/jpeg';
+
+            formData.append('file', {
+                uri: asset.uri,
+                name: filename,
+                type: type,
+            } as any);
+
+            const response = await uploadAvatar(user.id, formData);
+            
+            // Cập nhật avatar URL mới
+            setAvatar(`${API_BASE_URL}${response.avatar}`);
+            
+            // Refresh user data
+            await refreshUser();
+
+            // showSuccess("Cập nhật ảnh đại diện thành công!");
+        } catch (error: any) {
+            console.error("Upload avatar error:", error);
+            showError(error.response?.data?.error || "Không thể upload ảnh");
+        } finally {
+            setIsUploadingAvatar(false);
         }
     };
 
     const showImageOptions = () => {
-        Alert.alert("Đổi Avatar", "Chọn một tùy chọn", [
-            { text: "Chụp ảnh", onPress: takePhoto },
-            { text: "Chọn từ thư viện", onPress: pickImage },
-            { text: "Hủy", style: "cancel" },
-        ]);
+        if (Platform.OS === 'web') {
+            // On web, just use file input directly
+            fileInputRef.current?.click();
+        } else {
+            Alert.alert("Đổi Ảnh đại diện", "Chọn một tùy chọn", [
+                { text: "Chụp ảnh", onPress: takePhoto },
+                { text: "Chọn từ thư viện", onPress: pickImage },
+                { text: "Hủy", style: "cancel" },
+            ]);
+        }
     };
 
     const handleSave = async () => {
         // Validate inputs
         if (!name.trim()) {
-            Alert.alert("Lỗi", "Tên không được để trống");
+            showError("Tên không được để trống");
             return;
         }
         if (!email.trim() || !email.includes("@")) {
-            Alert.alert("Lỗi", "Vui lòng nhập email hợp lệ");
+            showError("Vui lòng nhập email hợp lệ");
             return;
         }
 
         // Kiểm tra user id
         if (!user?.id) {
-            Alert.alert("Lỗi", "Không tìm thấy thông tin người dùng");
+            showError("Không tìm thấy thông tin người dùng");
             return;
         }
 
@@ -134,20 +257,22 @@ export default function EditProfileScreen() {
             await updateUserProfile(user.id, {
                 name: name.trim(),
                 email: email.trim(),
+                phone: phoneNumber.trim() || undefined,
             });
 
             // Refresh user data từ server
             await refreshUser();
 
-            Alert.alert("Thành công", "Cập nhật hồ sơ thành công!", [
-                { text: "OK", onPress: () => router.back() },
-            ]);
+            // Show success modal - user will click OK to go back
+            setSuccessMessage("✅ Cập nhật hồ sơ thành công!");
+            setShowSuccessModal(true);
+            
         } catch (error: any) {
             console.error("Update profile error:", error);
             const errorMessage = error.response?.data?.message ||
                 error.message ||
                 "Có lỗi xảy ra khi cập nhật hồ sơ";
-            Alert.alert("Lỗi", errorMessage);
+            showError(errorMessage);
         } finally {
             setIsSaving(false);
         }
@@ -178,6 +303,59 @@ export default function EditProfileScreen() {
             style={styles.container}
             behavior={Platform.OS === "ios" ? "padding" : undefined}
         >
+            {/* Success Modal */}
+            <Modal
+                visible={showSuccessModal}
+                transparent={true}
+                animationType="fade"
+                onRequestClose={() => setShowSuccessModal(false)}
+            >
+                <View style={styles.modalOverlay}>
+                    <View style={styles.modalContent}>
+                        <View style={styles.modalIconContainer}>
+                            <Ionicons 
+                                name={successMessage.includes("❌") ? "close-circle" : "checkmark-circle"} 
+                                size={60} 
+                                color={successMessage.includes("❌") ? "#EF4444" : "#10B981"} 
+                            />
+                        </View>
+                        <Text style={styles.modalTitle}>
+                            {successMessage.includes("❌") ? "Thông báo" : "Thành công!"}
+                        </Text>
+                        <Text style={styles.modalMessage}>
+                            {successMessage.replace("❌ ", "").replace("✅ ", "")}
+                        </Text>
+                        <TouchableOpacity 
+                            style={[
+                                styles.modalButton,
+                                successMessage.includes("❌") ? styles.modalButtonError : styles.modalButtonSuccess
+                            ]}
+                            onPress={() => {
+                                setShowSuccessModal(false);
+                                if (!successMessage.includes("❌")) {
+                                    router.back();
+                                }
+                            }}
+                        >
+                            <Text style={styles.modalButtonText}>
+                                {successMessage.includes("❌") ? "Đóng" : "OK"}
+                            </Text>
+                        </TouchableOpacity>
+                    </View>
+                </View>
+            </Modal>
+
+            {/* Hidden file input for web */}
+            {Platform.OS === 'web' && (
+                <input
+                    ref={fileInputRef as any}
+                    type="file"
+                    accept="image/*"
+                    style={{ display: 'none' }}
+                    onChange={handleWebFileSelect as any}
+                />
+            )}
+
             {/* Header */}
             <View style={styles.header}>
                 <TouchableOpacity style={styles.backBtn} onPress={() => router.back()}>
@@ -193,8 +371,16 @@ export default function EditProfileScreen() {
             >
                 {/* Avatar Section */}
                 <View style={styles.avatarSection}>
-                    <TouchableOpacity style={styles.avatarContainer} onPress={showImageOptions}>
-                        {avatar ? (
+                    <TouchableOpacity 
+                        style={styles.avatarContainer} 
+                        onPress={showImageOptions}
+                        disabled={isUploadingAvatar}
+                    >
+                        {isUploadingAvatar ? (
+                            <View style={[styles.avatar, styles.avatarLoading]}>
+                                <ActivityIndicator size="large" color="#5B9EE1" />
+                            </View>
+                        ) : avatar ? (
                             <Image source={{ uri: avatar }} style={styles.avatar} />
                         ) : (
                             <Image
@@ -206,7 +392,9 @@ export default function EditProfileScreen() {
                             <Ionicons name="camera" size={18} color="#FFFFFF" />
                         </View>
                     </TouchableOpacity>
-                    <Text style={styles.changePhotoText}>Nhấn để thay đổi ảnh</Text>
+                    <Text style={styles.changePhotoText}>
+                        {isUploadingAvatar ? "Đang tải lên..." : "Nhấn để thay đổi ảnh"}
+                    </Text>
                 </View>
 
                 {/* User ID Badge */}
@@ -249,6 +437,22 @@ export default function EditProfileScreen() {
                                 placeholderTextColor="#94A3B8"
                                 keyboardType="email-address"
                                 autoCapitalize="none"
+                            />
+                        </View>
+                    </View>
+
+                    {/* Phone Number Input */}
+                    <View style={styles.inputGroup}>
+                        <Text style={styles.label}>Số điện thoại</Text>
+                        <View style={styles.inputWrapper}>
+                            <Ionicons name="call-outline" size={20} color="#94A3B8" />
+                            <TextInput
+                                style={styles.input}
+                                value={phoneNumber}
+                                onChangeText={setPhoneNumber}
+                                placeholder="Nhập số điện thoại"
+                                placeholderTextColor="#94A3B8"
+                                keyboardType="phone-pad"
                             />
                         </View>
                     </View>
@@ -358,12 +562,17 @@ const styles = StyleSheet.create({
     },
     avatarContainer: {
         position: "relative",
+        cursor: "pointer",
     },
     avatar: {
         width: 120,
         height: 120,
         borderRadius: 60,
         backgroundColor: "#E8ECEF",
+    },
+    avatarLoading: {
+        justifyContent: "center",
+        alignItems: "center",
     },
     editAvatarBtn: {
         position: "absolute",
@@ -513,6 +722,67 @@ const styles = StyleSheet.create({
     saveText: {
         color: "#FFF",
         fontSize: 16,
+        fontWeight: "600",
+    },
+    // Modal styles
+    modalOverlay: {
+        flex: 1,
+        backgroundColor: "rgba(0, 0, 0, 0.5)",
+        justifyContent: "center",
+        alignItems: "center",
+        padding: 20,
+    },
+    modalContent: {
+        backgroundColor: "#FFFFFF",
+        borderRadius: 24,
+        padding: 32,
+        alignItems: "center",
+        width: "100%",
+        maxWidth: 340,
+        ...Platform.select({
+            ios: {
+                shadowColor: "#000",
+                shadowOpacity: 0.15,
+                shadowRadius: 20,
+                shadowOffset: { width: 0, height: 10 },
+            },
+            android: {
+                elevation: 10,
+            },
+        }),
+    },
+    modalIconContainer: {
+        marginBottom: 16,
+    },
+    modalTitle: {
+        fontSize: 22,
+        fontWeight: "700",
+        color: "#0F172A",
+        marginBottom: 8,
+    },
+    modalMessage: {
+        fontSize: 15,
+        color: "#64748B",
+        textAlign: "center",
+        lineHeight: 22,
+    },
+    modalButton: {
+        borderRadius: 12,
+        paddingVertical: 12,
+        paddingHorizontal: 32,
+        marginTop: 20,
+        minWidth: 120,
+        alignItems: "center",
+    },
+    modalButtonSuccess: {
+        backgroundColor: "#10B981",
+    },
+    modalButtonError: {
+        backgroundColor: "#5B9EE1",
+    },
+    modalButtonText: {
+        color: "#FFF",
+        fontSize: 15,
         fontWeight: "600",
     },
 });

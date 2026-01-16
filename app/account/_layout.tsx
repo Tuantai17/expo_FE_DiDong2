@@ -13,6 +13,10 @@ export default function AccountLayout() {
             <Stack.Screen name="my-orders" />
             <Stack.Screen name="address" />
             <Stack.Screen name="settings" />
+            <Stack.Screen name="notifications" />
+            <Stack.Screen name="vouchers" />
+            <Stack.Screen name="payment-history" />
+            <Stack.Screen name="payment-detail" />
         </Stack>
     );
 }

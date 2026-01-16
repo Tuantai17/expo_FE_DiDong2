@@ -76,7 +76,7 @@ export default function FavoriteProductsSection() {
             </Text>
             <TouchableOpacity
                 style={styles.browseButton}
-                onPress={() => router.push("/(main)/home")}
+                onPress={() => router.push("/(main)")}
             >
                 <Ionicons name="search-outline" size={18} color="#FFFFFF" />
                 <Text style={styles.browseButtonText}>Khám phá sản phẩm</Text>

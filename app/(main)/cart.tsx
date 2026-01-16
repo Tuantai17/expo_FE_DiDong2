@@ -7,24 +7,31 @@
 
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
-import React from "react";
+import React, { useState } from "react";
 import {
-  Image,
-  Platform,
-  ScrollView,
-  StyleSheet,
-  Text,
-  TouchableOpacity,
-  View,
+    ActivityIndicator,
+    Alert,
+    Image,
+    Platform,
+    ScrollView,
+    StyleSheet,
+    Text,
+    TouchableOpacity,
+    View,
 } from "react-native";
 import { useCart } from "../../context/CartContext";
 import { showConfirmAlert } from "../../utils/alert";
+import haptics from "../../utils/haptics";
 
 // =================== COMPONENT =====================
 
 export default function CartScreen() {
   const router = useRouter();
-  const { items, changeQty, removeItem, clearCart } = useCart();
+  const { items, changeQty, removeItem, clearCart, isLoading: cartLoading } = useCart();
+  
+  // Local loading states
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [deletingItemId, setDeletingItemId] = useState<string | null>(null);
 
   // =================== CALCULATIONS =====================
 
@@ -34,8 +41,8 @@ export default function CartScreen() {
   // Calculate subtotal from real product prices
   const subtotal = items.reduce((sum, item) => sum + item.price * item.qty, 0);
 
-  // Shipping fee (free shipping over 500,000 VND)
-  const FREE_SHIPPING_THRESHOLD = 500000;
+  // Shipping fee (free shipping over 1,000,000 VND)
+  const FREE_SHIPPING_THRESHOLD = 1000000;
   const SHIPPING_FEE = 30000; // 30,000 VND
   const shipping = subtotal >= FREE_SHIPPING_THRESHOLD ? 0 : (items.length > 0 ? SHIPPING_FEE : 0);
 
@@ -51,26 +58,82 @@ export default function CartScreen() {
   // =================== HANDLERS =====================
 
   const handleCheckout = () => {
+    haptics.buttonPress();
     router.push("/product/checkout");
   };
 
-  const handleRemoveItem = (id: string, size: string, name: string) => {
+  const handleRemoveItem = async (id: string, size: string, name: string) => {
+    haptics.removeFromCart();
     showConfirmAlert(
       "Xóa sản phẩm",
       `Bạn có chắc muốn xóa "${name}" khỏi giỏ hàng?`,
-      () => removeItem(id, size)
+      async () => {
+        try {
+          setDeletingItemId(`${id}-${size}`);
+          await removeItem(id, size);
+          console.log("✅ [Cart] Removed item:", name);
+        } catch (error) {
+          console.log("❌ [Cart] Error removing item:", error);
+          Alert.alert("Lỗi", "Không thể xóa sản phẩm. Vui lòng thử lại.");
+        } finally {
+          setDeletingItemId(null);
+        }
+      }
     );
   };
 
-  const handleClearCart = () => {
+  const handleClearCart = async () => {
+    haptics.clearCart();
     showConfirmAlert(
       "Xóa tất cả",
       "Bạn có chắc muốn xóa tất cả sản phẩm trong giỏ hàng?",
-      () => clearCart()
+      async () => {
+        try {
+          setIsDeleting(true);
+          console.log("🗑️ [Cart] Clearing all items...");
+          await clearCart();
+          console.log("✅ [Cart] All items cleared");
+        } catch (error) {
+          console.log("❌ [Cart] Error clearing cart:", error);
+          Alert.alert("Lỗi", "Không thể xóa giỏ hàng. Vui lòng thử lại.");
+        } finally {
+          setIsDeleting(false);
+        }
+      }
     );
   };
 
   // =================== RENDER =====================
+
+  // Loading overlay
+  if (isDeleting || cartLoading) {
+    return (
+      <View style={styles.screen}>
+        {/* Header */}
+        <View style={styles.headerRow}>
+          <TouchableOpacity
+            style={styles.backButton}
+            onPress={() => router.back()}
+          >
+            <Ionicons name="chevron-back" size={20} color="#0F172A" />
+          </TouchableOpacity>
+          <Text style={styles.headerTitle}>Giỏ hàng</Text>
+          <View style={styles.headerRight}>
+            <View style={styles.cartBadge}>
+              <Text style={styles.cartBadgeText}>{totalItems}</Text>
+            </View>
+          </View>
+        </View>
+        
+        <View style={styles.loadingContainer}>
+          <ActivityIndicator size="large" color="#5B9EE1" />
+          <Text style={styles.loadingText}>
+            {isDeleting ? "Đang xóa giỏ hàng..." : "Đang tải..."}
+          </Text>
+        </View>
+      </View>
+    );
+  }
 
   return (
     <View style={styles.screen}>
@@ -156,7 +219,10 @@ export default function CartScreen() {
                         styles.qtyButton,
                         item.qty <= 1 && styles.qtyButtonDisabled
                       ]}
-                      onPress={() => changeQty(item.id, item.size, -1)}
+                      onPress={() => {
+                        haptics.decreaseQty();
+                        changeQty(item.id, item.size, -1);
+                      }}
                     >
                       <Ionicons
                         name="remove"
@@ -169,7 +235,10 @@ export default function CartScreen() {
 
                     <TouchableOpacity
                       style={[styles.qtyButton, styles.qtyButtonActive]}
-                      onPress={() => changeQty(item.id, item.size, +1)}
+                      onPress={() => {
+                        haptics.increaseQty();
+                        changeQty(item.id, item.size, +1);
+                      }}
                     >
                       <Ionicons name="add" size={16} color="#FFFFFF" />
                     </TouchableOpacity>
@@ -243,6 +312,11 @@ export default function CartScreen() {
                       <Text style={styles.freeShippingText}>Miễn phí</Text>
                     </View>
                   )}
+                  {subtotal < FREE_SHIPPING_THRESHOLD && subtotal > 0 && (
+                    <View style={[styles.freeShippingBadge, { backgroundColor: '#FEF3C7' }]}>
+                      <Text style={[styles.freeShippingText, { color: '#D97706' }]}>Dự tính</Text>
+                    </View>
+                  )}
                 </View>
                 <Text style={[
                   styles.summaryValue,
@@ -251,6 +325,13 @@ export default function CartScreen() {
                   {shipping === 0 ? "Miễn phí" : formatPrice(shipping)}
                 </Text>
               </View>
+              
+              {/* Note about shipping calculated at checkout */}
+              {subtotal < FREE_SHIPPING_THRESHOLD && subtotal > 0 && (
+                <Text style={{ fontSize: 11, color: '#94A3B8', fontStyle: 'italic', marginBottom: 8 }}>
+                  * Phí ship chính xác sẽ được tính tại trang thanh toán
+                </Text>
+              )}
 
               {/* Free shipping progress */}
               {subtotal < FREE_SHIPPING_THRESHOLD && (
@@ -311,6 +392,17 @@ const styles = StyleSheet.create({
   },
   scroll: {
     flex: 1,
+  },
+  loadingContainer: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  loadingText: {
+    marginTop: 12,
+    fontSize: 15,
+    color: "#64748B",
+    fontWeight: "500",
   },
 
   // Header

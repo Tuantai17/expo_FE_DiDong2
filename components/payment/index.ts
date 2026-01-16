@@ -4,4 +4,7 @@
  * Export all payment-related components
  */
 
-export { default as MoMoPaymentModal } from './MoMoPaymentModal';
+// VNPay WebView Component
+export { default as VNPayWebView } from './VNPayWebView';
+export type { VNPayWebViewProps } from './VNPayWebView';
+

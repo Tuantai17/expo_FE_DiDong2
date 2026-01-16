@@ -1,0 +1,82 @@
+{
+  "instructions": {
+    "title": "📦 INSTALLATION INSTRUCTIONS - Chat Image Upload Feature",
+    "description": "Dependencies required for Chat Image Upload + Gemini Vision feature",
+    "version": "1.0.0",
+    "steps": [
+      {
+        "step": 1,
+        "title": "Install Image Picker",
+        "command": "npx expo install expo-image-picker",
+        "description": "Required for selecting images from gallery or camera",
+        "required": true
+      },
+      {
+        "step": 2,
+        "title": "Verify existing dependencies",
+        "packages": ["axios", "@expo/vector-icons", "expo-router"],
+        "description": "These should already be installed. No action needed.",
+        "required": false
+      }
+    ],
+    "postInstall": [
+      {
+        "action": "Update app.json",
+        "file": "app.json",
+        "add": {
+          "expo": {
+            "plugins": [
+              [
+                "expo-image-picker",
+                {
+                  "photosPermission": "Cho phép ứng dụng truy cập thư viện ảnh để upload ảnh sản phẩm",
+                  "cameraPermission": "Cho phép ứng dụng sử dụng camera để chụp ảnh sản phẩm"
+                }
+              ]
+            ]
+          }
+        },
+        "description": "Add permissions for image picker"
+      },
+      {
+        "action": "Update ChatScreen.tsx",
+        "file": "components/chat/ChatScreen.tsx",
+        "description": "Follow instructions in CHAT_IMAGE_FRONTEND_GUIDE.md steps 1-6"
+      }
+    ],
+    "testing": {
+      "backend": {
+        "command": ".\\mvnw.cmd spring-boot:run",
+        "directory": "demo/",
+        "port": 8080,
+        "healthCheck": "http://localhost:8080/api/chat/messages/image/health"
+      },
+      "frontend": {
+        "command": "npx expo start",
+        "directory": "DiDong2_Shoeshop/",
+        "testSteps": [
+          "1. Open ChatScreen",
+          "2. Click image upload button (🖼️ icon)",
+          "3. Select image from gallery or camera",
+          "4. Wait for analysis (~5-10s)",
+          "5. View product suggestions",
+          "6. Click 'Thêm vào giỏ' to add product to cart"
+        ]
+      }
+    },
+    "troubleshooting": {
+      "moduleNotFound": {
+        "error": "Module 'expo-image-picker' not found",
+        "solution": "Run: npx expo install expo-image-picker"
+      },
+      "permissionDenied": {
+        "error": "Permission denied for camera/gallery",
+        "solution": "Check app.json plugins configuration and rebuild app"
+      },
+      "uploadFailed": {
+        "error": "Upload failed or 500 error",
+        "solution": "1. Check backend is running on port 8080\n2. Check Gemini API key in application.properties\n3. Check network connection"
+      }
+    }
+  }
+}

@@ -2,14 +2,17 @@
 import { useRouter } from "expo-router";
 import React, { useEffect, useState } from "react";
 import {
-    ActivityIndicator,
+    Alert,
     ScrollView,
     StyleSheet,
     Text,
     TouchableOpacity,
     View,
 } from "react-native";
+import Animated, { FadeInRight } from "react-native-reanimated";
+import { useCart } from "../../context/CartContext";
 import { getImageUrl, getProducts } from "../../services/api";
+import { ProductCardSkeleton } from "../ui/SkeletonLoader";
 import NewArrivalCard from "./NewArrivalCard";
 
 type Product = {
@@ -25,6 +28,7 @@ type Product = {
 
 export default function HomeNewArrivalSection() {
     const router = useRouter();
+    const { addToCart } = useCart();
     const [products, setProducts] = useState<Product[]>([]);
     const [loading, setLoading] = useState(true);
 
@@ -54,6 +58,41 @@ export default function HomeNewArrivalSection() {
         return category.name.toUpperCase();
     };
 
+    // Quick add to cart without going to product detail
+    const handleQuickAdd = async (item: Product) => {
+        try {
+            await addToCart({
+                id: item.id.toString(),
+                productId: item.id,
+                name: item.title,
+                price: item.price,
+                image: { uri: getImageUrl(item.photo) },
+                size: "40", // Default size
+                quantity: 1,
+            });
+            console.log("✅ [Home] Added to cart:", item.title);
+        } catch (error) {
+            console.log("❌ [Home] Error adding to cart:", error);
+            Alert.alert("Lỗi", "Không thể thêm vào giỏ hàng");
+        }
+    };
+
+    // Skeleton loading cards
+    const renderSkeletonCards = () => (
+        <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            style={styles.scrollView}
+            contentContainerStyle={styles.scrollContent}
+        >
+            {[1, 2, 3].map((i) => (
+                <View key={i} style={styles.card}>
+                    <ProductCardSkeleton />
+                </View>
+            ))}
+        </ScrollView>
+    );
+
     return (
         <View>
             {/* Section header */}
@@ -68,9 +107,7 @@ export default function HomeNewArrivalSection() {
 
             {/* Horizontal scrollable product list */}
             {loading ? (
-                <View style={styles.loadingContainer}>
-                    <ActivityIndicator size="small" color="#5B9EE1" />
-                </View>
+                renderSkeletonCards()
             ) : (
                 <ScrollView
                     horizontal
@@ -78,28 +115,27 @@ export default function HomeNewArrivalSection() {
                     style={styles.scrollView}
                     contentContainerStyle={styles.scrollContent}
                 >
-                    {products.map((item) => (
-                        <NewArrivalCard
+                    {products.map((item, index) => (
+                        <Animated.View
                             key={item.id}
-                            id={item.id.toString()}
-                            tag={getTagFromCategory(item.category)}
-                            name={item.title}
-                            price={formatPrice(item.price)}
-                            image={{ uri: getImageUrl(item.photo) }}
-                            style={styles.card}
-                            onPress={() =>
-                                router.push({
-                                    pathname: "/product/productDetail",
-                                    params: { id: item.id.toString() },
-                                })
-                            }
-                            onAddPress={() =>
-                                router.push({
-                                    pathname: "/product/productDetail",
-                                    params: { id: item.id.toString() },
-                                })
-                            }
-                        />
+                            entering={FadeInRight.delay(index * 80).duration(400)}
+                        >
+                            <NewArrivalCard
+                                id={item.id.toString()}
+                                tag={getTagFromCategory(item.category)}
+                                name={item.title}
+                                price={formatPrice(item.price)}
+                                image={{ uri: getImageUrl(item.photo) }}
+                                style={styles.card}
+                                onPress={() =>
+                                    router.push({
+                                        pathname: "/product/productDetail",
+                                        params: { id: item.id.toString() },
+                                    })
+                                }
+                                onAddPress={() => handleQuickAdd(item)}
+                            />
+                        </Animated.View>
                     ))}
                 </ScrollView>
             )}

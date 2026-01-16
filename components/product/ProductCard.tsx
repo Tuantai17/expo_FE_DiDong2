@@ -1,24 +1,33 @@
 // components/product/ProductCard.tsx
 import { Ionicons } from "@expo/vector-icons";
-import React from "react";
+import React, { useMemo, useRef } from "react";
 import {
-  Dimensions,
+  GestureResponderEvent,
   Image,
   ImageSourcePropType,
+  Platform,
+  Pressable,
   StyleProp,
   StyleSheet,
   Text,
-  TouchableOpacity,
+  useWindowDimensions,
   View,
-  ViewStyle,
+  ViewStyle
 } from "react-native";
+import Animated, {
+  useAnimatedStyle,
+  useSharedValue,
+  withSequence,
+  withSpring,
+  withTiming,
+} from "react-native-reanimated";
 import { useFavorite } from "../../context/FavoriteContext";
+import haptics from "../../utils/haptics";
+import { useFlyAnimation } from "../ui/FlyToAnimation";
 
-// Tính toán width card để 2 card vừa khít màn hình
-const SCREEN_WIDTH = Dimensions.get("window").width;
+// Constants for card calculation
 const HORIZONTAL_PADDING = 16;
 const GAP = 12;
-const CARD_WIDTH = (SCREEN_WIDTH - HORIZONTAL_PADDING * 2 - GAP) / 2;
 
 type Props = {
   id: string;
@@ -32,7 +41,6 @@ type Props = {
   showFavoriteButton?: boolean;
 };
 
-
 export default function ProductCard({
   id,
   tag,
@@ -45,7 +53,25 @@ export default function ProductCard({
   showFavoriteButton = true,
 }: Props) {
   const { isFavorite, toggleFavorite } = useFavorite();
+  const { triggerCartFly, triggerFavoriteFly } = useFlyAnimation();
   const isLiked = isFavorite(id);
+
+  // Use useWindowDimensions for reactive width calculation
+  const { width: screenWidth } = useWindowDimensions();
+  
+  // Calculate card width dynamically - memoized for performance
+  const cardWidth = useMemo(() => {
+    return (screenWidth - HORIZONTAL_PADDING * 2 - GAP) / 2;
+  }, [screenWidth]);
+
+  // Refs for measuring button positions
+  const addButtonRef = useRef<View>(null);
+  const favoriteButtonRef = useRef<View>(null);
+
+  // Animation values
+  const cardScale = useSharedValue(1);
+  const addButtonScale = useSharedValue(1);
+  const favoriteScale = useSharedValue(1);
 
   // Xác định màu tag dựa trên loại tag
   const getTagColor = () => {
@@ -65,69 +91,156 @@ export default function ProductCard({
     }
   };
 
-  const handleFavoritePress = () => {
+  // CRITICAL: Stop event propagation to parent card
+  const handleFavoritePress = (e: GestureResponderEvent) => {
+    e.stopPropagation();
+    
+    // Only animate when ADDING favorite, not removing
+    if (!isLiked) {
+      haptics.addFavorite();
+      
+      // Scale animation
+      favoriteScale.value = withSequence(
+        withSpring(1.3, { damping: 10, stiffness: 400 }),
+        withSpring(1, { damping: 15, stiffness: 300 })
+      );
+
+      // Trigger fly animation only when adding
+      if (favoriteButtonRef.current) {
+        favoriteButtonRef.current.measureInWindow((x, y, width, height) => {
+          triggerFavoriteFly(image, x + width / 2 - 30, y - 30);
+        });
+      }
+    } else {
+      // Simple haptic for removing favorite
+      haptics.buttonPress();
+    }
+
     toggleFavorite({ id, tag, name, price, image });
   };
 
+  // CRITICAL: Stop event propagation to parent card
+  const handleAddToCart = (e: GestureResponderEvent) => {
+    e.stopPropagation();
+    
+    haptics.addToCart();
+
+    // Scale animation
+    addButtonScale.value = withSequence(
+      withSpring(1.4, { damping: 10, stiffness: 400 }),
+      withSpring(1, { damping: 15, stiffness: 300 })
+    );
+
+    // Trigger fly animation
+    if (addButtonRef.current) {
+      addButtonRef.current.measureInWindow((x, y, width, height) => {
+        triggerCartFly(image, x - 20, y - 30);
+      });
+    }
+
+    // Call parent handler if provided
+    onAddPress?.();
+  };
+
+  const handleCardPress = () => {
+    haptics.buttonPress();
+    cardScale.value = withSequence(
+      withTiming(0.97, { duration: 50 }),
+      withSpring(1, { damping: 15, stiffness: 300 })
+    );
+    onPress?.();
+  };
+
+  // Animated styles
+  const cardAnimatedStyle = useAnimatedStyle(() => ({
+    transform: [{ scale: cardScale.value }],
+  }));
+
+  const addButtonAnimatedStyle = useAnimatedStyle(() => ({
+    transform: [{ scale: addButtonScale.value }],
+  }));
+
+  const favoriteAnimatedStyle = useAnimatedStyle(() => ({
+    transform: [{ scale: favoriteScale.value }],
+  }));
+
   return (
-    <TouchableOpacity
-      activeOpacity={0.9}
-      onPress={onPress}
-      style={[styles.container, style]}
+    <Pressable
+      onPress={handleCardPress}
+      style={({ pressed }) => [
+        styles.container,
+        { width: cardWidth },
+        style,
+        pressed && Platform.OS !== 'web' && { opacity: 0.95 },
+      ]}
     >
-      {/* Image container */}
-      <View style={styles.imageContainer}>
-        <Image source={image} style={styles.productImage} />
+      <Animated.View style={cardAnimatedStyle}>
+        {/* Image container */}
+        <View style={styles.imageContainer}>
+          <Image source={image} style={styles.productImage} />
 
-        {/* Favorite Button */}
-        {showFavoriteButton && (
-          <TouchableOpacity
-            style={[
-              styles.favoriteButton,
-              isLiked && styles.favoriteButtonActive,
-            ]}
-            onPress={handleFavoritePress}
-            activeOpacity={0.8}
-          >
-            <Ionicons
-              name={isLiked ? "heart" : "heart-outline"}
-              size={14}
-              color={isLiked ? "#EF4444" : "#94A3B8"}
-            />
-          </TouchableOpacity>
-        )}
-      </View>
-
-      {/* Tag badge */}
-      <View style={[styles.tagBadge, { backgroundColor: getTagColor() }]}>
-        <Text style={styles.tagText}>{tag}</Text>
-      </View>
-
-      {/* Product info */}
-      <View style={styles.infoContainer}>
-        <Text style={styles.name} numberOfLines={1}>
-          {name}
-        </Text>
-
-        <View style={styles.priceRow}>
-          <Text style={styles.price}>{price}</Text>
-
-          <TouchableOpacity
-            style={styles.addButton}
-            activeOpacity={0.85}
-            onPress={onAddPress}
-          >
-            <Text style={styles.addButtonText}>+</Text>
-          </TouchableOpacity>
+          {/* Favorite Button - with stopPropagation */}
+          {showFavoriteButton && (
+            <Animated.View style={[styles.favoriteWrapper, favoriteAnimatedStyle]}>
+              <Pressable
+                ref={favoriteButtonRef as any}
+                style={[
+                  styles.favoriteButton,
+                  isLiked && styles.favoriteButtonActive,
+                ]}
+                onPress={handleFavoritePress}
+                // Block touch from bubbling to parent on web
+                onStartShouldSetResponder={() => true}
+              >
+                <Ionicons
+                  name={isLiked ? "heart" : "heart-outline"}
+                  size={14}
+                  color={isLiked ? "#EF4444" : "#94A3B8"}
+                />
+              </Pressable>
+            </Animated.View>
+          )}
         </View>
-      </View>
-    </TouchableOpacity>
+
+        {/* Tag badge */}
+        <View style={[styles.tagBadge, { backgroundColor: getTagColor() }]}>
+          <Text style={styles.tagText}>{tag}</Text>
+        </View>
+
+        {/* Product info */}
+        <View style={styles.infoContainer}>
+          <Text style={styles.name} numberOfLines={1}>
+            {name}
+          </Text>
+
+          <View style={styles.priceRow}>
+            <Text style={styles.price}>{price}</Text>
+
+            {/* Add to Cart Button - with stopPropagation */}
+            <Animated.View style={addButtonAnimatedStyle}>
+              <Pressable
+                ref={addButtonRef as any}
+                style={({ pressed }) => [
+                  styles.addButton,
+                  pressed && { backgroundColor: "#D4E6F9" },
+                ]}
+                onPress={handleAddToCart}
+                // Block touch from bubbling to parent on web
+                onStartShouldSetResponder={() => true}
+              >
+                <Ionicons name="add" size={16} color="#5B9EE1" />
+              </Pressable>
+            </Animated.View>
+          </View>
+        </View>
+      </Animated.View>
+    </Pressable>
   );
 }
 
 const styles = StyleSheet.create({
   container: {
-    width: CARD_WIDTH,
+    // width is now calculated dynamically using useWindowDimensions
     borderRadius: 16,
     backgroundColor: "#FFFFFF",
     shadowColor: "#5B9EE1",
@@ -151,10 +264,12 @@ const styles = StyleSheet.create({
     height: "100%",
     resizeMode: "contain",
   },
-  favoriteButton: {
+  favoriteWrapper: {
     position: "absolute",
     top: 8,
     right: 8,
+  },
+  favoriteButton: {
     width: 28,
     height: 28,
     borderRadius: 14,
@@ -210,11 +325,5 @@ const styles = StyleSheet.create({
     backgroundColor: "#EBF4FF",
     alignItems: "center",
     justifyContent: "center",
-  },
-  addButtonText: {
-    color: "#5B9EE1",
-    fontSize: 16,
-    fontWeight: "700",
-    lineHeight: 18,
   },
 });

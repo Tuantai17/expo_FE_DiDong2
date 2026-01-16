@@ -18,7 +18,7 @@ export type OrderStatus =
     | 'COMPLETED'
     | 'CANCELLED';
 
-export type PaymentMethod = 'COD' | 'MOMO' | 'BANKING';
+export type PaymentMethod = 'COD' | 'VNPAY' | 'BANKING';
 
 export interface OrderItem {
     productId: number;
@@ -34,6 +34,7 @@ export interface MobileCheckoutRequest {
     shippingName: string;
     shippingPhone: string;
     shippingAddress: string;
+    addressId?: number;
     paymentMethod: PaymentMethod;
     note?: string;
     voucherCode?: string;

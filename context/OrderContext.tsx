@@ -12,7 +12,7 @@ import { useAuth } from "./AuthContext";
 
 // =================== TYPES =====================
 
-export type PaymentMethodType = "COD" | "MOMO" | "BANKING";
+export type PaymentMethodType = "COD" | "VNPAY" | "BANKING";
 
 export type CreateOrderInput = {
     items: {
@@ -27,6 +27,7 @@ export type CreateOrderInput = {
         fullName: string;
         phone: string;
         address: string;
+        addressId?: number;
         note?: string;
     };
     paymentMethod: PaymentMethodType;
@@ -122,6 +123,7 @@ export function OrderProvider({ children }: { children: ReactNode }) {
                 shippingName: input.shippingInfo.fullName,
                 shippingPhone: input.shippingInfo.phone,
                 shippingAddress: input.shippingInfo.address,
+                addressId: input.shippingInfo.addressId,
                 paymentMethod: input.paymentMethod,
                 note: input.shippingInfo.note,
                 voucherCode: input.voucherCode,

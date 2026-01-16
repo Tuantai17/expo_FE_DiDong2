@@ -28,21 +28,30 @@ export default function SignupScreen() {
     const [formData, setFormData] = useState({
         username: '',
         email: '',
+        phone: '',
         password: '',
+        confirmPassword: '',
     });
     const [isLoading, setIsLoading] = useState(false);
     const [showPassword, setShowPassword] = useState(false);
+    const [showConfirmPassword, setShowConfirmPassword] = useState(false);
     const [showSuccessModal, setShowSuccessModal] = useState(false);
 
     // ========================================
     // XỬ LÝ ĐĂNG KÝ
     // ========================================
     const handleRegister = async () => {
-        const { username, email, password } = formData;
+        const { username, email, phone, password, confirmPassword } = formData;
 
-        // Validate input
-        if (!username.trim() || !email.trim() || !password.trim()) {
+        // Validate input - Kiểm tra tất cả các trường bắt buộc
+        if (!username.trim() || !email.trim() || !phone.trim() || !password.trim() || !confirmPassword.trim()) {
             Alert.alert("Thông báo", "Vui lòng điền đầy đủ thông tin!");
+            return;
+        }
+
+        // Validate name length - Tên phải có ít nhất 2 ký tự
+        if (username.trim().length < 2) {
+            Alert.alert("Thông báo", "Tên phải có ít nhất 2 ký tự!");
             return;
         }
 
@@ -53,9 +62,22 @@ export default function SignupScreen() {
             return;
         }
 
+        // Validate phone number - Số điện thoại Việt Nam (10-11 số)
+        const phoneRegex = /^(0|\+84)[3|5|7|8|9][0-9]{8}$/;
+        if (!phoneRegex.test(phone.replace(/\s/g, ''))) {
+            Alert.alert("Thông báo", "Số điện thoại không hợp lệ!\nVui lòng nhập số điện thoại Việt Nam (VD: 0901234567)");
+            return;
+        }
+
         // Validate password length
         if (password.length < 6) {
             Alert.alert("Thông báo", "Mật khẩu phải có ít nhất 6 ký tự!");
+            return;
+        }
+
+        // Validate password match - Kiểm tra mật khẩu xác nhận
+        if (password !== confirmPassword) {
+            Alert.alert("Thông báo", "Mật khẩu xác nhận không khớp!");
             return;
         }
 
@@ -73,6 +95,7 @@ export default function SignupScreen() {
                 body: JSON.stringify({
                     name: username,
                     email: email,
+                    phone: phone,
                     password: password,
                 }),
             });
@@ -88,7 +111,7 @@ export default function SignupScreen() {
                 console.log("✅ Đăng ký thành công, hiển thị modal...");
 
                 // Reset form ngay lập tức
-                setFormData({ username: '', email: '', password: '' });
+                setFormData({ username: '', email: '', phone: '', password: '', confirmPassword: '' });
 
                 // Hiển thị Success Modal
                 setShowSuccessModal(true);
@@ -194,6 +217,21 @@ export default function SignupScreen() {
                             />
                         </View>
 
+                        {/* Phone Number Input */}
+                        <View style={styles.inputContainer}>
+                            <Text style={styles.inputLabel}>Phone Number</Text>
+                            <TextInput
+                                style={styles.input}
+                                placeholder="0901234567"
+                                placeholderTextColor="#A0A0A0"
+                                keyboardType="phone-pad"
+                                value={formData.phone}
+                                onChangeText={(text) => updateFormField('phone', text)}
+                                editable={!isLoading}
+                                maxLength={11}
+                            />
+                        </View>
+
                         {/* Password Input */}
                         <View style={styles.inputContainer}>
                             <Text style={styles.inputLabel}>Password</Text>
@@ -213,6 +251,32 @@ export default function SignupScreen() {
                                 >
                                     <Ionicons
                                         name={showPassword ? "eye-outline" : "eye-off-outline"}
+                                        size={22}
+                                        color="#A0A0A0"
+                                    />
+                                </TouchableOpacity>
+                            </View>
+                        </View>
+
+                        {/* Confirm Password Input */}
+                        <View style={styles.inputContainer}>
+                            <Text style={styles.inputLabel}>Confirm Password</Text>
+                            <View style={styles.passwordWrapper}>
+                                <TextInput
+                                    style={styles.passwordInput}
+                                    placeholder="••••••••"
+                                    placeholderTextColor="#A0A0A0"
+                                    secureTextEntry={!showConfirmPassword}
+                                    value={formData.confirmPassword}
+                                    onChangeText={(text) => updateFormField('confirmPassword', text)}
+                                    editable={!isLoading}
+                                />
+                                <TouchableOpacity
+                                    style={styles.eyeButton}
+                                    onPress={() => setShowConfirmPassword(!showConfirmPassword)}
+                                >
+                                    <Ionicons
+                                        name={showConfirmPassword ? "eye-outline" : "eye-off-outline"}
                                         size={22}
                                         color="#A0A0A0"
                                     />

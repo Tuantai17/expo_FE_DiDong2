@@ -1,5 +1,6 @@
 // app/account/address.tsx
-import { Ionicons } from "@expo/vector-icons";
+// Address Management Screen - Shopee Style
+import { Ionicons, MaterialIcons } from "@expo/vector-icons";
 import * as Location from "expo-location";
 import { useRouter } from "expo-router";
 import React, { useEffect, useState } from "react";
@@ -7,364 +8,696 @@ import {
     ActivityIndicator,
     Alert,
     FlatList,
-    Linking,
     Modal,
+    ScrollView,
+    StatusBar,
     StyleSheet,
+    Switch,
     Text,
     TextInput,
     TouchableOpacity,
-    View,
+    View
 } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
+import LocationPickerModal from "../../components/checkout/LocationPickerModal";
+import { useAuth } from "../../context/AuthContext";
+import { Address, addressService } from "../../services/addressService";
 
-interface Address {
-    id: string;
-    name: string;
-    detail: string;
+// Address Types
+type AddressType = "HOME" | "OFFICE";
+
+interface AddressFormData {
+    fullName: string;
+    phone: string;
+    province: string; // Tỉnh/Thành phố
+    district: string; // Quận/Huyện
+    ward: string; // Phường/Xã
+    streetAddress: string; // Tên đường, Toà nhà, Số nhà
     isDefault: boolean;
-    latitude?: number;
-    longitude?: number;
+    addressType: AddressType;
 }
 
-const INITIAL_ADDRESSES: Address[] = [
-    {
-        id: "1",
-        name: "Home",
-        detail: "123 Main Street, Dhaka",
-        isDefault: true,
-        latitude: 23.8103,
-        longitude: 90.4125,
-    },
-    {
-        id: "2",
-        name: "Office",
-        detail: "456 Business Rd, Dhaka",
-        isDefault: false,
-        latitude: 23.7925,
-        longitude: 90.4078,
-    },
-];
+const initialFormData: AddressFormData = {
+    fullName: "",
+    phone: "",
+    province: "",
+    district: "",
+    ward: "",
+    streetAddress: "",
+    isDefault: false,
+    addressType: "HOME",
+};
 
 export default function AddressScreen() {
     const router = useRouter();
-    const [addresses, setAddresses] = useState<Address[]>(INITIAL_ADDRESSES);
+    const { user } = useAuth();
+    const insets = useSafeAreaInsets();
+    
+    // States
+    const [addresses, setAddresses] = useState<Address[]>([]);
+    const [isLoading, setIsLoading] = useState(false);
     const [showAddModal, setShowAddModal] = useState(false);
+    const [showMapPicker, setShowMapPicker] = useState(false);
+    const [isSaving, setIsSaving] = useState(false);
     const [isLoadingLocation, setIsLoadingLocation] = useState(false);
-    const [newAddress, setNewAddress] = useState({
-        name: "",
-        detail: "",
-        latitude: 0,
-        longitude: 0,
-    });
+    const [editingAddress, setEditingAddress] = useState<Address | null>(null);
+    const [formData, setFormData] = useState<AddressFormData>(initialFormData);
 
-    // Request location permission on mount
+    // Load addresses
     useEffect(() => {
-        (async () => {
-            const { status } = await Location.requestForegroundPermissionsAsync();
-            if (status !== "granted") {
-                console.log("Location permission not granted");
-            }
-        })();
-    }, []);
+        if (user?.id) {
+            loadAddresses();
+        }
+    }, [user]);
 
+    const loadAddresses = async () => {
+        if (!user?.id) return;
+        setIsLoading(true);
+        try {
+            const data = await addressService.getUserAddresses(user.id);
+            // Sort: default first
+            const sorted = data.sort((a, b) => {
+                if (a.isDefault && !b.isDefault) return -1;
+                if (!a.isDefault && b.isDefault) return 1;
+                return 0;
+            });
+            setAddresses(sorted);
+        } catch (error) {
+            console.error("Error loading addresses:", error);
+        } finally {
+            setIsLoading(false);
+        }
+    };
+
+    // Get current location with enhanced geocoding
     const getCurrentLocation = async () => {
         setIsLoadingLocation(true);
         try {
             const { status } = await Location.requestForegroundPermissionsAsync();
             if (status !== "granted") {
-                Alert.alert(
-                    "Permission Denied",
-                    "Please enable location permission in settings to use this feature.",
-                    [
-                        { text: "Cancel", style: "cancel" },
-                        { text: "Open Settings", onPress: () => Linking.openSettings() },
-                    ]
-                );
-                setIsLoadingLocation(false);
+                Alert.alert("Lỗi", "Vui lòng cấp quyền truy cập vị trí");
                 return;
             }
 
+            // Get current position with high accuracy
             const location = await Location.getCurrentPositionAsync({
                 accuracy: Location.Accuracy.High,
             });
 
-            const { latitude, longitude } = location.coords;
+            console.log('[Address] Got position:', {
+                lat: location.coords.latitude,
+                lng: location.coords.longitude,
+            });
 
-            // Reverse geocode to get address
+            // Try Nominatim (OpenStreetMap) for more accurate Vietnamese addresses
+            try {
+                const response = await fetch(
+                    `https://nominatim.openstreetmap.org/reverse?format=json&lat=${location.coords.latitude}&lon=${location.coords.longitude}&zoom=18&addressdetails=1&accept-language=vi`,
+                    {
+                        headers: {
+                            'User-Agent': 'DiDong2_Shoeshop/1.0',
+                        },
+                    }
+                );
+
+                if (response.ok) {
+                    const data = await response.json();
+                    const addr = data.address;
+                    const displayName = data.display_name || '';
+                    
+                    console.log('[Address] Nominatim raw response:', JSON.stringify(addr, null, 2));
+
+                    // === PARSE VIETNAMESE ADDRESS ===
+                    // Vietnamese structure: Số nhà + Đường, Phường/Xã, Quận/Huyện/TP cấp huyện, Tỉnh/TP trực thuộc TW
+                    
+                    // 1. ĐƯỜNG (Street)
+                    const streetNumber = addr.house_number || '';
+                    const streetName = addr.road || addr.street || addr.pedestrian || addr.path || '';
+                    let fullStreet = [streetNumber, streetName].filter(Boolean).join(' ');
+                    
+                    // 2. PHƯỜNG/XÃ (Ward)
+                    const wardValue = addr.quarter || addr.neighbourhood || addr.suburb || addr.village || '';
+                    
+                    // 3. QUẬN/HUYỆN hoặc THÀNH PHỐ cấp huyện (District)
+                    // - "Thành phố Thủ Đức" là TP cấp huyện thuộc TP.HCM
+                    // - "Thuận An" là TP cấp huyện thuộc Bình Dương
+                    const districtValue = addr.city_district || addr.town || addr.county || addr.city || '';
+                    
+                    // 4. TỈNH/THÀNH PHỐ trực thuộc TW (Province)
+                    // - Nếu có state -> đó là tỉnh/TP trực thuộc TW
+                    // - Nếu không có state nhưng có city là TP lớn -> city là tỉnh
+                    let provinceValue = addr.state || '';
+                    
+                    // Special handling for Vietnamese cities
+                    // Thành phố Thủ Đức thuộc TP.HCM nhưng Nominatim có thể không trả về state
+                    if (!provinceValue && districtValue) {
+                        // Check if district looks like a major city
+                        if (districtValue.includes('Thành phố Thủ Đức') || 
+                            districtValue.includes('Thủ Đức')) {
+                            provinceValue = 'TP. Hồ Chí Minh';
+                        }
+                    }
+                    
+                    // If still no street, try first part of display_name
+                    if (!fullStreet && displayName) {
+                        const parts = displayName.split(',').map((p: string) => p.trim());
+                        for (const part of parts) {
+                            // Skip ward/district/city/country names
+                            if (part && 
+                                !part.includes('Phường') && 
+                                !part.includes('Xã') &&
+                                !part.includes('Thành phố') &&
+                                !part.includes('Quận') &&
+                                !part.includes('Huyện') &&
+                                !part.includes('Tỉnh') &&
+                                !part.includes('Việt Nam') &&
+                                !part.match(/^\d{5,}$/)) { // Skip postcode
+                                fullStreet = part;
+                                break;
+                            }
+                        }
+                    }
+
+                    // If still no street but we have display_name, use first useful part
+                    if (!fullStreet && displayName) {
+                        // Split display_name which is like "Place, Ward, District, City, Country"
+                        // First part before ward is usually the most specific
+                        const displayParts = displayName.split(',').map((p: string) => p.trim());
+                        for (const part of displayParts) {
+                            // If we hit ward/district/city, stop
+                            if (part === wardValue || part === districtValue || part === provinceValue) {
+                                break;
+                            }
+                            // Skip generic location names
+                            if (part && 
+                                !part.includes('Phường') && 
+                                !part.includes('Xã') &&
+                                !part.includes('Thành phố') &&
+                                !part.includes('Quận') &&
+                                !part.includes('Huyện') &&
+                                !part.includes('Tỉnh') &&
+                                !part.includes('Việt Nam') &&
+                                !part.match(/^\d{5,}$/)) {
+                                fullStreet = part;
+                                break;
+                            }
+                        }
+                    }
+
+                    console.log('[Address] Parsed values:', {
+                        streetAddress: fullStreet,
+                        ward: wardValue,
+                        district: districtValue,
+                        province: provinceValue,
+                    });
+
+                    setFormData(prev => ({
+                        ...prev,
+                        streetAddress: fullStreet,
+                        ward: wardValue,
+                        district: districtValue,
+                        province: provinceValue,
+                    }));
+
+                    // If no street found from Nominatim, also try Expo as backup
+                    if (!fullStreet) {
+                        console.log('[Address] No street from Nominatim, trying Expo...');
+                        try {
+                            const [expoGeocode] = await Location.reverseGeocodeAsync({
+                                latitude: location.coords.latitude,
+                                longitude: location.coords.longitude,
+                            });
+                            if (expoGeocode && (expoGeocode.street || expoGeocode.streetNumber)) {
+                                const expoStreet = [expoGeocode.streetNumber, expoGeocode.street].filter(Boolean).join(' ');
+                                console.log('[Address] Expo found street:', expoStreet);
+                                if (expoStreet) {
+                                    setFormData(prev => ({
+                                        ...prev,
+                                        streetAddress: expoStreet,
+                                    }));
+                                }
+                            }
+                        } catch (expoError) {
+                            console.log('[Address] Expo backup failed:', expoError);
+                        }
+                    }
+
+                    return;
+                }
+            } catch (nominatimError) {
+                console.log('[Address] Nominatim failed, using Expo fallback:', nominatimError);
+            }
+
+            // Fallback to Expo Location
             const [geocode] = await Location.reverseGeocodeAsync({
-                latitude,
-                longitude,
+                latitude: location.coords.latitude,
+                longitude: location.coords.longitude,
             });
 
             if (geocode) {
-                const addressParts = [
-                    geocode.streetNumber,
-                    geocode.street,
-                    geocode.district,
-                    geocode.city,
-                    geocode.region,
-                    geocode.country,
-                ].filter(Boolean);
+                console.log('[Address] Expo geocode:', geocode);
+                
+                const street = [geocode.streetNumber, geocode.street].filter(Boolean).join(" ");
+                const ward = geocode.subregion || geocode.district || "";
+                const district = geocode.city || "";
+                const province = geocode.region || "";
 
-                setNewAddress({
-                    ...newAddress,
-                    detail: addressParts.join(", "),
-                    latitude,
-                    longitude,
-                });
+                setFormData(prev => ({
+                    ...prev,
+                    streetAddress: street,
+                    ward: ward,
+                    district: district,
+                    province: province,
+                }));
             }
         } catch (error) {
-            Alert.alert("Error", "Failed to get your current location. Please try again.");
+            console.error('[Address] Location error:', error);
+            Alert.alert("Lỗi", "Không thể lấy vị trí. Vui lòng thử lại.");
+        } finally {
+            setIsLoadingLocation(false);
         }
-        setIsLoadingLocation(false);
     };
 
-    const handleAddAddress = () => {
-        if (!newAddress.name.trim() || !newAddress.detail.trim()) {
-            Alert.alert("Error", "Please fill in all fields");
+    // Handle map selection
+    const handleMapSelect = (address: string) => {
+        // Parse address from map
+        const parts = address.split(",").map(p => p.trim());
+        setFormData(prev => ({
+            ...prev,
+            streetAddress: parts[0] || "",
+            ward: parts[1] || "",
+            district: parts[2] || "",
+            province: parts[3] || "",
+        }));
+        setShowMapPicker(false);
+    };
+
+    // Open add modal
+    const openAddModal = () => {
+        setEditingAddress(null);
+        setFormData({
+            ...initialFormData,
+            fullName: user?.fullName || user?.name || "",
+            phone: user?.phoneNumber || "",
+        });
+        setShowAddModal(true);
+    };
+
+    // Open edit modal
+    const openEditModal = (address: Address) => {
+        setEditingAddress(address);
+        // Parse address into parts
+        const addressParts = address.address?.split(",").map(p => p.trim()) || [];
+        setFormData({
+            fullName: address.fullName,
+            phone: address.phone,
+            province: address.city || addressParts[3] || "",
+            district: addressParts[2] || "",
+            ward: addressParts[1] || "",
+            streetAddress: addressParts[0] || address.address || "",
+            isDefault: address.isDefault,
+            addressType: "HOME",
+        });
+        setShowAddModal(true);
+    };
+
+    // Save address
+    const handleSaveAddress = async () => {
+        // Validation
+        if (!formData.fullName.trim()) {
+            Alert.alert("Lỗi", "Vui lòng nhập họ và tên");
+            return;
+        }
+        if (!formData.phone.trim()) {
+            Alert.alert("Lỗi", "Vui lòng nhập số điện thoại");
+            return;
+        }
+        if (!formData.streetAddress.trim()) {
+            Alert.alert("Lỗi", "Vui lòng nhập địa chỉ chi tiết");
             return;
         }
 
-        const newId = String(Date.now());
-        const address: Address = {
-            id: newId,
-            name: newAddress.name,
-            detail: newAddress.detail,
-            isDefault: addresses.length === 0,
-            latitude: newAddress.latitude || undefined,
-            longitude: newAddress.longitude || undefined,
-        };
+        if (!user?.id) return;
 
-        setAddresses([...addresses, address]);
-        setNewAddress({ name: "", detail: "", latitude: 0, longitude: 0 });
-        setShowAddModal(false);
+        setIsSaving(true);
+        try {
+            // Combine address parts
+            const fullAddress = [
+                formData.streetAddress,
+                formData.ward,
+                formData.district,
+                formData.province,
+            ].filter(Boolean).join(", ");
+
+            const requestData = {
+                fullName: formData.fullName,
+                phone: formData.phone,
+                address: fullAddress,
+                city: formData.province || formData.district,
+                country: "Vietnam",
+                isDefault: formData.isDefault,
+            };
+
+            if (editingAddress) {
+                await addressService.updateAddress(user.id, editingAddress.id, requestData);
+            } else {
+                await addressService.createAddress(user.id, requestData);
+            }
+
+            setShowAddModal(false);
+            loadAddresses();
+            Alert.alert("Thành công", editingAddress ? "Đã cập nhật địa chỉ" : "Đã thêm địa chỉ mới");
+        } catch (error: any) {
+            Alert.alert("Lỗi", error.message || "Không thể lưu địa chỉ");
+        } finally {
+            setIsSaving(false);
+        }
     };
 
-    const handleSetDefault = (id: string) => {
-        setAddresses(
-            addresses.map((addr) => ({
-                ...addr,
-                isDefault: addr.id === id,
-            }))
-        );
-    };
-
-    const handleDelete = (id: string) => {
+    // Delete address
+    const handleDeleteAddress = (address: Address) => {
         Alert.alert(
-            "Delete Address",
-            "Are you sure you want to delete this address?",
+            "Xác nhận xóa",
+            `Bạn có chắc muốn xóa địa chỉ của ${address.fullName}?`,
             [
-                { text: "Cancel", style: "cancel" },
+                { text: "Hủy", style: "cancel" },
                 {
-                    text: "Delete",
+                    text: "Xóa",
                     style: "destructive",
-                    onPress: () => {
-                        const filtered = addresses.filter((addr) => addr.id !== id);
-                        // If deleted address was default, make first one default
-                        if (filtered.length > 0 && !filtered.some((a) => a.isDefault)) {
-                            filtered[0].isDefault = true;
+                    onPress: async () => {
+                        if (!user?.id) return;
+                        try {
+                            await addressService.deleteAddress(user.id, address.id);
+                            loadAddresses();
+                        } catch (error) {
+                            Alert.alert("Lỗi", "Không thể xóa địa chỉ");
                         }
-                        setAddresses(filtered);
                     },
                 },
             ]
         );
     };
 
-    const openInMaps = (address: Address) => {
-        if (address.latitude && address.longitude) {
-            const url = `https://www.google.com/maps/search/?api=1&query=${address.latitude},${address.longitude}`;
-            Linking.openURL(url);
-        } else {
-            const encodedAddress = encodeURIComponent(address.detail);
-            const url = `https://www.google.com/maps/search/?api=1&query=${encodedAddress}`;
-            Linking.openURL(url);
+    // Set default address
+    const handleSetDefault = async (address: Address) => {
+        if (!user?.id || address.isDefault) return;
+        try {
+            await addressService.setDefaultAddress(user.id, address.id);
+            loadAddresses();
+        } catch (error) {
+            Alert.alert("Lỗi", "Không thể đặt địa chỉ mặc định");
         }
     };
 
-    const renderAddressCard = ({ item }: { item: Address }) => (
-        <View style={styles.card}>
-            <View style={styles.cardHeader}>
-                <View style={styles.nameContainer}>
-                    <Ionicons
-                        name={item.name.toLowerCase() === "home" ? "home" : "business"}
-                        size={20}
-                        color="#5B9EE1"
-                    />
-                    <Text style={styles.name}>{item.name}</Text>
-                    {item.isDefault && (
-                        <View style={styles.defaultBadge}>
-                            <Text style={styles.defaultText}>Default</Text>
-                        </View>
-                    )}
+    // Render address item (Shopee style)
+    const renderAddressItem = ({ item }: { item: Address }) => (
+        <TouchableOpacity 
+            style={styles.addressCard}
+            onPress={() => openEditModal(item)}
+            activeOpacity={0.7}
+        >
+            <View style={styles.addressContent}>
+                {/* Name & Phone */}
+                <View style={styles.addressHeader}>
+                    <Text style={styles.addressName}>{item.fullName || 'Chưa có tên'}</Text>
+                    <Text style={styles.addressDivider}>|</Text>
+                    <Text style={styles.addressPhone}>(+84) {(item.phone || '').replace(/^0/, '')}</Text>
                 </View>
-                <TouchableOpacity
-                    style={styles.deleteBtn}
-                    onPress={() => handleDelete(item.id)}
-                >
-                    <Ionicons name="trash-outline" size={18} color="#EF4444" />
-                </TouchableOpacity>
+
+                {/* Full Address */}
+                <Text style={styles.addressDetail} numberOfLines={2}>
+                    {item.address || 'Chưa có địa chỉ'}
+                </Text>
+                {item.city ? (
+                    <Text style={styles.addressCity}>
+                        {item.city}{item.country ? `, ${item.country}` : ''}
+                    </Text>
+                ) : null}
+
+                {/* Badges */}
+                <View style={styles.badgeContainer}>
+                    {item.isDefault ? (
+                        <View style={styles.defaultBadge}>
+                            <Text style={styles.defaultBadgeText}>Mặc định</Text>
+                        </View>
+                    ) : null}
+                </View>
             </View>
 
-            <Text style={styles.detail}>{item.detail}</Text>
-
-            <View style={styles.cardActions}>
-                <TouchableOpacity
-                    style={styles.mapBtn}
-                    onPress={() => openInMaps(item)}
+            {/* Actions */}
+            <View style={styles.addressActions}>
+                <TouchableOpacity 
+                    style={styles.editBtn}
+                    onPress={() => openEditModal(item)}
                 >
-                    <Ionicons name="map-outline" size={16} color="#5B9EE1" />
-                    <Text style={styles.mapBtnText}>View on Map</Text>
+                    <Text style={styles.editBtnText}>Sửa</Text>
                 </TouchableOpacity>
-
-                {!item.isDefault && (
-                    <TouchableOpacity
-                        style={styles.setDefaultBtn}
-                        onPress={() => handleSetDefault(item.id)}
-                    >
-                        <Text style={styles.setDefaultText}>Set as Default</Text>
-                    </TouchableOpacity>
-                )}
             </View>
+        </TouchableOpacity>
+    );
+
+    // Empty state
+    const renderEmptyState = () => (
+        <View style={styles.emptyContainer}>
+            <Ionicons name="location-outline" size={64} color="#CBD5E1" />
+            <Text style={styles.emptyTitle}>Chưa có địa chỉ</Text>
+            <Text style={styles.emptySubtitle}>
+                Thêm địa chỉ giao hàng để thanh toán nhanh hơn
+            </Text>
         </View>
     );
 
     return (
-        <View style={styles.container}>
+        <View style={[styles.container, { paddingTop: insets.top }]}>
+            <StatusBar barStyle="dark-content" backgroundColor="#FFFFFF" />
+            
             {/* Header */}
             <View style={styles.header}>
                 <TouchableOpacity style={styles.backBtn} onPress={() => router.back()}>
-                    <Ionicons name="chevron-back" size={22} color="#0F172A" />
+                    <Ionicons name="arrow-back" size={24} color="#0F172A" />
                 </TouchableOpacity>
-                <Text style={styles.headerTitle}>Delivery Address</Text>
-                <View style={{ width: 40 }} />
+                <Text style={styles.headerTitle}>Địa chỉ của Tôi</Text>
+                <View style={styles.headerSpacer} />
             </View>
 
-            {/* Summary */}
-            <View style={styles.summaryCard}>
-                <Ionicons name="location" size={24} color="#5B9EE1" />
-                <View style={styles.summaryInfo}>
-                    <Text style={styles.summaryTitle}>Saved Addresses</Text>
-                    <Text style={styles.summarySubtitle}>
-                        {addresses.length} address{addresses.length !== 1 ? "es" : ""} saved
-                    </Text>
-                </View>
+            {/* Section Label */}
+            <View style={styles.sectionLabel}>
+                <Text style={styles.sectionLabelText}>Địa chỉ</Text>
             </View>
 
             {/* Address List */}
-            <FlatList
-                data={addresses}
-                keyExtractor={(item) => item.id}
-                renderItem={renderAddressCard}
-                contentContainerStyle={styles.listContainer}
-                showsVerticalScrollIndicator={false}
-                ListEmptyComponent={
-                    <View style={styles.emptyContainer}>
-                        <Ionicons name="location-outline" size={64} color="#E2E8F0" />
-                        <Text style={styles.emptyTitle}>No addresses saved</Text>
-                        <Text style={styles.emptySubtitle}>
-                            Add your delivery addresses for faster checkout
-                        </Text>
-                    </View>
-                }
-            />
+            {isLoading ? (
+                <View style={styles.loadingContainer}>
+                    <ActivityIndicator size="large" color="#EE4D2D" />
+                </View>
+            ) : (
+                <FlatList
+                    data={addresses}
+                    keyExtractor={(item) => item.id.toString()}
+                    renderItem={renderAddressItem}
+                    contentContainerStyle={styles.listContainer}
+                    ListEmptyComponent={renderEmptyState}
+                    showsVerticalScrollIndicator={false}
+                />
+            )}
 
             {/* Add Button */}
-            <TouchableOpacity
-                style={styles.addBtn}
-                onPress={() => setShowAddModal(true)}
-            >
-                <Ionicons name="add" size={22} color="#FFF" />
-                <Text style={styles.addText}>Add New Address</Text>
-            </TouchableOpacity>
+            <View style={[styles.addButtonContainer, { paddingBottom: insets.bottom + 16 }]}>
+                <TouchableOpacity style={styles.addButton} onPress={openAddModal}>
+                    <Ionicons name="add" size={22} color="#EE4D2D" />
+                    <Text style={styles.addButtonText}>Thêm Địa Chỉ Mới</Text>
+                </TouchableOpacity>
+            </View>
 
-            {/* Add Address Modal */}
+            {/* Add/Edit Modal */}
             <Modal
                 visible={showAddModal}
                 animationType="slide"
-                transparent={true}
+                presentationStyle="pageSheet"
                 onRequestClose={() => setShowAddModal(false)}
             >
-                <View style={styles.modalOverlay}>
-                    <View style={styles.modalContent}>
-                        <View style={styles.modalHeader}>
-                            <Text style={styles.modalTitle}>Add New Address</Text>
-                            <TouchableOpacity onPress={() => setShowAddModal(false)}>
-                                <Ionicons name="close" size={24} color="#64748B" />
-                            </TouchableOpacity>
-                        </View>
-
-                        <View style={styles.inputGroup}>
-                            <Text style={styles.label}>Address Name</Text>
-                            <TextInput
-                                style={styles.input}
-                                placeholder="e.g. Home, Office, etc."
-                                placeholderTextColor="#94A3B8"
-                                value={newAddress.name}
-                                onChangeText={(text) =>
-                                    setNewAddress({ ...newAddress, name: text })
-                                }
-                            />
-                        </View>
-
-                        <View style={styles.inputGroup}>
-                            <Text style={styles.label}>Full Address</Text>
-                            <TextInput
-                                style={[styles.input, styles.textArea]}
-                                placeholder="Enter your full address"
-                                placeholderTextColor="#94A3B8"
-                                value={newAddress.detail}
-                                onChangeText={(text) =>
-                                    setNewAddress({ ...newAddress, detail: text })
-                                }
-                                multiline
-                                numberOfLines={3}
-                            />
-                        </View>
-
-                        {/* Get Current Location Button */}
-                        <TouchableOpacity
-                            style={styles.locationBtn}
-                            onPress={getCurrentLocation}
-                            disabled={isLoadingLocation}
-                        >
-                            {isLoadingLocation ? (
-                                <ActivityIndicator size="small" color="#5B9EE1" />
-                            ) : (
-                                <Ionicons name="locate" size={20} color="#5B9EE1" />
-                            )}
-                            <Text style={styles.locationBtnText}>
-                                {isLoadingLocation
-                                    ? "Getting location..."
-                                    : "Use Current Location"}
-                            </Text>
+                <View style={[styles.modalContainer, { paddingTop: insets.top }]}>
+                    {/* Modal Header */}
+                    <View style={styles.modalHeader}>
+                        <TouchableOpacity onPress={() => setShowAddModal(false)}>
+                            <Ionicons name="arrow-back" size={24} color="#0F172A" />
                         </TouchableOpacity>
-
-                        {newAddress.latitude !== 0 && (
-                            <View style={styles.coordsInfo}>
-                                <Ionicons name="checkmark-circle" size={16} color="#10B981" />
-                                <Text style={styles.coordsText}>
-                                    Location captured successfully
-                                </Text>
-                            </View>
+                        <Text style={styles.modalTitle}>
+                            {editingAddress ? "Sửa địa chỉ" : "Địa chỉ mới"}
+                        </Text>
+                        {editingAddress && (
+                            <TouchableOpacity onPress={() => handleDeleteAddress(editingAddress)}>
+                                <Ionicons name="trash-outline" size={22} color="#EF4444" />
+                            </TouchableOpacity>
                         )}
+                        {!editingAddress && <View style={{ width: 24 }} />}
+                    </View>
 
-                        <View style={styles.modalActions}>
-                            <TouchableOpacity
-                                style={styles.cancelBtn}
-                                onPress={() => setShowAddModal(false)}
-                            >
-                                <Text style={styles.cancelBtnText}>Cancel</Text>
-                            </TouchableOpacity>
-                            <TouchableOpacity
-                                style={styles.saveBtn}
-                                onPress={handleAddAddress}
-                            >
-                                <Text style={styles.saveBtnText}>Save Address</Text>
-                            </TouchableOpacity>
+                    <ScrollView style={styles.modalContent} showsVerticalScrollIndicator={false}>
+                        {/* Quick Fill Section */}
+                        <View style={styles.quickFillSection}>
+                            <View style={styles.quickFillHeader}>
+                                <MaterialIcons name="content-paste" size={20} color="#EE4D2D" />
+                                <Text style={styles.quickFillTitle}>Dán và nhập nhanh</Text>
+                            </View>
+                            <Text style={styles.quickFillDesc}>
+                                Dán hoặc nhập thông tin, nhấn chọn Tự động điền để nhập tên, số điện thoại và địa chỉ.
+                            </Text>
+                            <View style={styles.quickFillActions}>
+                                <TouchableOpacity 
+                                    style={styles.locationBtn}
+                                    onPress={getCurrentLocation}
+                                    disabled={isLoadingLocation}
+                                >
+                                    {isLoadingLocation ? (
+                                        <ActivityIndicator size="small" color="#EE4D2D" />
+                                    ) : (
+                                        <Ionicons name="locate" size={18} color="#EE4D2D" />
+                                    )}
+                                    <Text style={styles.locationBtnText}>Vị trí hiện tại</Text>
+                                </TouchableOpacity>
+                                <TouchableOpacity 
+                                    style={styles.locationBtn}
+                                    onPress={() => setShowMapPicker(true)}
+                                >
+                                    <Ionicons name="map-outline" size={18} color="#EE4D2D" />
+                                    <Text style={styles.locationBtnText}>Chọn trên bản đồ</Text>
+                                </TouchableOpacity>
+                            </View>
                         </View>
+
+                        {/* Form Section */}
+                        <View style={styles.formSection}>
+                            <Text style={styles.formSectionTitle}>
+                                Địa chỉ (dùng thông tin trước sắp nhập)
+                            </Text>
+
+                            {/* Full Name */}
+                            <View style={styles.inputGroup}>
+                                <TextInput
+                                    style={styles.input}
+                                    placeholder="Họ và tên"
+                                    placeholderTextColor="#94A3B8"
+                                    value={formData.fullName}
+                                    onChangeText={(text) => setFormData({ ...formData, fullName: text })}
+                                />
+                            </View>
+
+                            {/* Phone */}
+                            <View style={styles.inputGroup}>
+                                <TextInput
+                                    style={styles.input}
+                                    placeholder="Số điện thoại"
+                                    placeholderTextColor="#94A3B8"
+                                    keyboardType="phone-pad"
+                                    value={formData.phone}
+                                    onChangeText={(text) => setFormData({ ...formData, phone: text })}
+                                />
+                            </View>
+
+                            {/* Province/City */}
+                            <TouchableOpacity style={styles.inputGroup}>
+                                <View style={styles.selectInput}>
+                                    <TextInput
+                                        style={[styles.input, { flex: 1 }]}
+                                        placeholder="Tỉnh/Thành phố, Quận/Huyện, Phường/Xã"
+                                        placeholderTextColor="#94A3B8"
+                                        value={[formData.province, formData.district, formData.ward].filter(Boolean).join(", ")}
+                                        onChangeText={(text) => {
+                                            const parts = text.split(",").map(p => p.trim());
+                                            setFormData({
+                                                ...formData,
+                                                province: parts[0] || "",
+                                                district: parts[1] || "",
+                                                ward: parts[2] || "",
+                                            });
+                                        }}
+                                    />
+                                    <Ionicons name="chevron-forward" size={20} color="#94A3B8" />
+                                </View>
+                            </TouchableOpacity>
+
+                            {/* Street Address */}
+                            <View style={styles.inputGroup}>
+                                <TextInput
+                                    style={styles.input}
+                                    placeholder="Tên đường, Toà nhà, Số nhà"
+                                    placeholderTextColor="#94A3B8"
+                                    value={formData.streetAddress}
+                                    onChangeText={(text) => setFormData({ ...formData, streetAddress: text })}
+                                />
+                            </View>
+                        </View>
+
+                        {/* Settings Section */}
+                        <View style={styles.settingsSection}>
+                            {/* Default Toggle */}
+                            <View style={styles.settingRow}>
+                                <Text style={styles.settingLabel}>Đặt làm địa chỉ mặc định</Text>
+                                <Switch
+                                    value={formData.isDefault}
+                                    onValueChange={(value) => setFormData({ ...formData, isDefault: value })}
+                                    trackColor={{ false: "#E2E8F0", true: "#FED7D7" }}
+                                    thumbColor={formData.isDefault ? "#EE4D2D" : "#FFFFFF"}
+                                />
+                            </View>
+
+                            {/* Address Type */}
+                            <View style={styles.settingRow}>
+                                <Text style={styles.settingLabel}>Loại địa chỉ:</Text>
+                                <View style={styles.typeButtons}>
+                                    <TouchableOpacity
+                                        style={[
+                                            styles.typeBtn,
+                                            formData.addressType === "OFFICE" && styles.typeBtnActive,
+                                        ]}
+                                        onPress={() => setFormData({ ...formData, addressType: "OFFICE" })}
+                                    >
+                                        <Text style={[
+                                            styles.typeBtnText,
+                                            formData.addressType === "OFFICE" && styles.typeBtnTextActive,
+                                        ]}>Văn Phòng</Text>
+                                    </TouchableOpacity>
+                                    <TouchableOpacity
+                                        style={[
+                                            styles.typeBtn,
+                                            formData.addressType === "HOME" && styles.typeBtnActive,
+                                        ]}
+                                        onPress={() => setFormData({ ...formData, addressType: "HOME" })}
+                                    >
+                                        <Text style={[
+                                            styles.typeBtnText,
+                                            formData.addressType === "HOME" && styles.typeBtnTextActive,
+                                        ]}>Nhà Riêng</Text>
+                                    </TouchableOpacity>
+                                </View>
+                            </View>
+                        </View>
+                    </ScrollView>
+
+                    {/* Save Button */}
+                    <View style={[styles.saveButtonContainer, { paddingBottom: insets.bottom + 16 }]}>
+                        <TouchableOpacity
+                            style={[styles.saveButton, isSaving && styles.saveButtonDisabled]}
+                            onPress={handleSaveAddress}
+                            disabled={isSaving}
+                        >
+                            {isSaving ? (
+                                <ActivityIndicator color="#FFFFFF" />
+                            ) : (
+                                <Text style={styles.saveButtonText}>HOÀN THÀNH</Text>
+                            )}
+                        </TouchableOpacity>
                     </View>
                 </View>
             </Modal>
+
+            {/* Map Picker Modal */}
+            <LocationPickerModal
+                visible={showMapPicker}
+                onClose={() => setShowMapPicker(false)}
+                onSelectAddress={handleMapSelect}
+            />
         </View>
     );
 }
@@ -372,147 +705,127 @@ export default function AddressScreen() {
 const styles = StyleSheet.create({
     container: {
         flex: 1,
-        backgroundColor: "#F8FAFC",
-        paddingTop: 50,
-        paddingHorizontal: 16,
+        backgroundColor: "#F5F5F5",
     },
     header: {
         flexDirection: "row",
         alignItems: "center",
-        marginBottom: 20,
+        paddingHorizontal: 16,
+        paddingVertical: 12,
+        backgroundColor: "#FFFFFF",
+        borderBottomWidth: 1,
+        borderBottomColor: "#E5E5E5",
     },
     backBtn: {
-        width: 40,
-        height: 40,
-        borderRadius: 12,
-        backgroundColor: "#FFFFFF",
-        alignItems: "center",
-        justifyContent: "center",
-        shadowColor: "#000",
-        shadowOpacity: 0.05,
-        shadowRadius: 6,
-        shadowOffset: { width: 0, height: 2 },
-        elevation: 2,
+        padding: 4,
     },
     headerTitle: {
         flex: 1,
+        fontSize: 18,
+        fontWeight: "600",
+        color: "#0F172A",
         textAlign: "center",
-        fontSize: 20,
-        fontWeight: "700",
-        color: "#0F172A",
+        marginRight: 28,
     },
-    summaryCard: {
-        flexDirection: "row",
-        alignItems: "center",
-        backgroundColor: "#FFFFFF",
-        padding: 16,
-        borderRadius: 16,
-        marginBottom: 16,
-        shadowColor: "#5B9EE1",
-        shadowOpacity: 0.08,
-        shadowRadius: 12,
-        shadowOffset: { width: 0, height: 4 },
-        elevation: 3,
+    headerSpacer: {
+        width: 28,
     },
-    summaryInfo: {
-        marginLeft: 12,
+    sectionLabel: {
+        paddingHorizontal: 16,
+        paddingVertical: 12,
+        backgroundColor: "#F5F5F5",
     },
-    summaryTitle: {
-        fontSize: 16,
-        fontWeight: "700",
-        color: "#0F172A",
-    },
-    summarySubtitle: {
+    sectionLabelText: {
         fontSize: 13,
         color: "#64748B",
-        marginTop: 2,
+    },
+    loadingContainer: {
+        flex: 1,
+        justifyContent: "center",
+        alignItems: "center",
     },
     listContainer: {
         paddingBottom: 100,
     },
-    card: {
+    // Address Card - Shopee Style
+    addressCard: {
         backgroundColor: "#FFFFFF",
-        padding: 16,
-        borderRadius: 16,
-        marginBottom: 12,
-        shadowColor: "#000",
-        shadowOpacity: 0.05,
-        shadowRadius: 8,
-        shadowOffset: { width: 0, height: 2 },
-        elevation: 2,
-    },
-    cardHeader: {
+        paddingHorizontal: 16,
+        paddingVertical: 14,
+        borderBottomWidth: 1,
+        borderBottomColor: "#F0F0F0",
         flexDirection: "row",
         justifyContent: "space-between",
-        alignItems: "center",
-        marginBottom: 8,
     },
-    nameContainer: {
+    addressContent: {
+        flex: 1,
+        paddingRight: 12,
+    },
+    addressHeader: {
         flexDirection: "row",
         alignItems: "center",
-        gap: 8,
+        marginBottom: 6,
     },
-    name: {
-        fontSize: 16,
-        fontWeight: "700",
+    addressName: {
+        fontSize: 15,
+        fontWeight: "600",
         color: "#0F172A",
     },
-    defaultBadge: {
-        backgroundColor: "#DCFCE7",
-        paddingHorizontal: 8,
-        paddingVertical: 2,
-        borderRadius: 999,
+    addressDivider: {
+        marginHorizontal: 8,
+        color: "#CBD5E1",
     },
-    defaultText: {
-        fontSize: 10,
-        fontWeight: "600",
-        color: "#16A34A",
-    },
-    deleteBtn: {
-        padding: 8,
-    },
-    detail: {
+    addressPhone: {
         fontSize: 14,
         color: "#64748B",
-        lineHeight: 20,
     },
-    cardActions: {
-        flexDirection: "row",
-        justifyContent: "space-between",
-        alignItems: "center",
-        marginTop: 12,
-        paddingTop: 12,
-        borderTopWidth: 1,
-        borderTopColor: "#F1F5F9",
-    },
-    mapBtn: {
-        flexDirection: "row",
-        alignItems: "center",
-        gap: 6,
-    },
-    mapBtnText: {
+    addressDetail: {
         fontSize: 13,
-        fontWeight: "600",
+        color: "#475569",
+        lineHeight: 18,
+        marginBottom: 2,
+    },
+    addressCity: {
+        fontSize: 13,
+        color: "#475569",
+        marginBottom: 8,
+    },
+    badgeContainer: {
+        flexDirection: "row",
+        gap: 8,
+        marginTop: 4,
+    },
+    defaultBadge: {
+        borderWidth: 1,
+        borderColor: "#EE4D2D",
+        paddingHorizontal: 6,
+        paddingVertical: 2,
+        borderRadius: 2,
+    },
+    defaultBadgeText: {
+        fontSize: 11,
+        color: "#EE4D2D",
+    },
+    addressActions: {
+        justifyContent: "flex-start",
+    },
+    editBtn: {
+        paddingVertical: 4,
+    },
+    editBtnText: {
+        fontSize: 14,
         color: "#5B9EE1",
     },
-    setDefaultBtn: {
-        paddingHorizontal: 12,
-        paddingVertical: 6,
-        borderRadius: 8,
-        backgroundColor: "#F0F7FF",
-    },
-    setDefaultText: {
-        fontSize: 12,
-        fontWeight: "600",
-        color: "#5B9EE1",
-    },
+    // Empty State
     emptyContainer: {
+        flex: 1,
+        justifyContent: "center",
         alignItems: "center",
-        paddingVertical: 60,
+        paddingVertical: 80,
     },
     emptyTitle: {
-        fontSize: 18,
-        fontWeight: "700",
+        fontSize: 16,
+        fontWeight: "600",
         color: "#0F172A",
         marginTop: 16,
     },
@@ -521,131 +834,185 @@ const styles = StyleSheet.create({
         color: "#64748B",
         marginTop: 8,
         textAlign: "center",
+        paddingHorizontal: 40,
     },
-    addBtn: {
+    // Add Button
+    addButtonContainer: {
         position: "absolute",
-        bottom: 30,
-        left: 16,
-        right: 16,
+        bottom: 0,
+        left: 0,
+        right: 0,
+        backgroundColor: "#FFFFFF",
+        paddingHorizontal: 16,
+        paddingTop: 12,
+        borderTopWidth: 1,
+        borderTopColor: "#E5E5E5",
+    },
+    addButton: {
         flexDirection: "row",
-        backgroundColor: "#5B9EE1",
-        padding: 16,
-        borderRadius: 16,
         alignItems: "center",
         justifyContent: "center",
-        gap: 8,
-        shadowColor: "#5B9EE1",
-        shadowOpacity: 0.3,
-        shadowRadius: 10,
-        shadowOffset: { width: 0, height: 4 },
-        elevation: 5,
+        borderWidth: 1,
+        borderColor: "#EE4D2D",
+        borderRadius: 4,
+        paddingVertical: 12,
+        gap: 6,
     },
-    addText: {
-        color: "#FFF",
-        fontSize: 16,
-        fontWeight: "600",
+    addButtonText: {
+        fontSize: 15,
+        fontWeight: "500",
+        color: "#EE4D2D",
     },
-    // Modal styles
-    modalOverlay: {
+    // Modal
+    modalContainer: {
         flex: 1,
-        backgroundColor: "rgba(0, 0, 0, 0.5)",
-        justifyContent: "flex-end",
-    },
-    modalContent: {
-        backgroundColor: "#FFFFFF",
-        borderTopLeftRadius: 24,
-        borderTopRightRadius: 24,
-        padding: 24,
-        paddingBottom: 40,
+        backgroundColor: "#F5F5F5",
     },
     modalHeader: {
         flexDirection: "row",
-        justifyContent: "space-between",
         alignItems: "center",
-        marginBottom: 24,
+        justifyContent: "space-between",
+        paddingHorizontal: 16,
+        paddingVertical: 12,
+        backgroundColor: "#FFFFFF",
+        borderBottomWidth: 1,
+        borderBottomColor: "#E5E5E5",
     },
     modalTitle: {
-        fontSize: 20,
-        fontWeight: "700",
+        fontSize: 18,
+        fontWeight: "600",
         color: "#0F172A",
     },
-    inputGroup: {
-        marginBottom: 16,
+    modalContent: {
+        flex: 1,
     },
-    label: {
-        fontSize: 14,
-        fontWeight: "500",
-        color: "#64748B",
+    // Quick Fill Section
+    quickFillSection: {
+        backgroundColor: "#FFF5F0",
+        padding: 16,
         marginBottom: 8,
     },
-    input: {
-        borderWidth: 1,
-        borderColor: "#E2E8F0",
-        borderRadius: 12,
-        padding: 14,
-        fontSize: 15,
-        color: "#0F172A",
-        backgroundColor: "#F8FAFC",
+    quickFillHeader: {
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 8,
+        marginBottom: 8,
     },
-    textArea: {
-        height: 80,
-        textAlignVertical: "top",
+    quickFillTitle: {
+        fontSize: 14,
+        fontWeight: "600",
+        color: "#0F172A",
+    },
+    quickFillDesc: {
+        fontSize: 13,
+        color: "#64748B",
+        lineHeight: 18,
+        marginBottom: 12,
+    },
+    quickFillActions: {
+        flexDirection: "row",
+        gap: 12,
     },
     locationBtn: {
         flexDirection: "row",
         alignItems: "center",
-        justifyContent: "center",
-        gap: 8,
-        padding: 14,
-        borderRadius: 12,
+        gap: 6,
+        backgroundColor: "#FFFFFF",
+        paddingHorizontal: 12,
+        paddingVertical: 8,
+        borderRadius: 4,
         borderWidth: 1,
-        borderColor: "#5B9EE1",
-        borderStyle: "dashed",
-        marginBottom: 16,
+        borderColor: "#E5E5E5",
     },
     locationBtnText: {
-        fontSize: 14,
-        fontWeight: "600",
-        color: "#5B9EE1",
+        fontSize: 13,
+        color: "#EE4D2D",
+        fontWeight: "500",
     },
-    coordsInfo: {
-        flexDirection: "row",
-        alignItems: "center",
-        gap: 6,
+    // Form Section
+    formSection: {
+        backgroundColor: "#FFFFFF",
+        padding: 16,
+        marginBottom: 8,
+    },
+    formSectionTitle: {
+        fontSize: 13,
+        color: "#64748B",
         marginBottom: 16,
     },
-    coordsText: {
-        fontSize: 13,
-        color: "#10B981",
+    inputGroup: {
+        marginBottom: 16,
     },
-    modalActions: {
+    input: {
+        fontSize: 15,
+        color: "#0F172A",
+        paddingVertical: 12,
+        borderBottomWidth: 1,
+        borderBottomColor: "#E5E5E5",
+    },
+    selectInput: {
         flexDirection: "row",
-        gap: 12,
-        marginTop: 8,
-    },
-    cancelBtn: {
-        flex: 1,
-        padding: 14,
-        borderRadius: 12,
-        borderWidth: 1,
-        borderColor: "#E2E8F0",
         alignItems: "center",
     },
-    cancelBtnText: {
+    // Settings
+    settingsSection: {
+        backgroundColor: "#FFFFFF",
+        padding: 16,
+    },
+    settingRow: {
+        flexDirection: "row",
+        alignItems: "center",
+        justifyContent: "space-between",
+        paddingVertical: 12,
+    },
+    settingLabel: {
         fontSize: 15,
-        fontWeight: "600",
+        color: "#0F172A",
+    },
+    typeButtons: {
+        flexDirection: "row",
+        gap: 8,
+    },
+    typeBtn: {
+        paddingHorizontal: 16,
+        paddingVertical: 8,
+        borderRadius: 4,
+        borderWidth: 1,
+        borderColor: "#E5E5E5",
+        backgroundColor: "#FFFFFF",
+    },
+    typeBtnActive: {
+        borderColor: "#EE4D2D",
+        backgroundColor: "#FFF5F0",
+    },
+    typeBtnText: {
+        fontSize: 13,
         color: "#64748B",
     },
-    saveBtn: {
-        flex: 1,
-        padding: 14,
-        borderRadius: 12,
-        backgroundColor: "#5B9EE1",
+    typeBtnTextActive: {
+        color: "#EE4D2D",
+    },
+    // Save Button
+    saveButtonContainer: {
+        backgroundColor: "#FFFFFF",
+        paddingHorizontal: 16,
+        paddingTop: 12,
+        borderTopWidth: 1,
+        borderTopColor: "#E5E5E5",
+    },
+    saveButton: {
+        backgroundColor: "#EE4D2D",
+        borderRadius: 4,
+        paddingVertical: 14,
         alignItems: "center",
     },
-    saveBtnText: {
+    saveButtonDisabled: {
+        backgroundColor: "#CBD5E1",
+    },
+    saveButtonText: {
         fontSize: 15,
         fontWeight: "600",
         color: "#FFFFFF",
+        letterSpacing: 0.5,
     },
 });

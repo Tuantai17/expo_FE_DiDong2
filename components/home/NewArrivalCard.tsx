@@ -1,17 +1,28 @@
 // components/home/NewArrivalCard.tsx
 import { Ionicons } from "@expo/vector-icons";
-import React from "react";
+import React, { useRef } from "react";
 import {
-  Image,
-  ImageSourcePropType,
-  StyleProp,
-  StyleSheet,
-  Text,
-  TouchableOpacity,
-  View,
-  ViewStyle,
+    GestureResponderEvent,
+    Image,
+    ImageSourcePropType,
+    Platform,
+    Pressable,
+    StyleProp,
+    StyleSheet,
+    Text,
+    View,
+    ViewStyle,
 } from "react-native";
+import Animated, {
+    useAnimatedStyle,
+    useSharedValue,
+    withSequence,
+    withSpring,
+    withTiming,
+} from "react-native-reanimated";
 import { useFavorite } from "../../context/FavoriteContext";
+import haptics from "../../utils/haptics";
+import { useFlyAnimation } from "../ui/FlyToAnimation";
 
 type Props = {
   id: string;
@@ -35,7 +46,17 @@ export default function NewArrivalCard({
   onAddPress,
 }: Props) {
   const { isFavorite, toggleFavorite } = useFavorite();
+  const { triggerCartFly, triggerFavoriteFly } = useFlyAnimation();
   const isLiked = isFavorite(id);
+
+  // Refs for measuring button positions
+  const addButtonRef = useRef<View>(null);
+  const favoriteButtonRef = useRef<View>(null);
+
+  // Animation values
+  const cardScale = useSharedValue(1);
+  const addButtonScale = useSharedValue(1);
+  const favoriteScale = useSharedValue(1);
 
   // Xác định màu tag dựa trên loại tag
   const getTagColor = () => {
@@ -51,61 +72,143 @@ export default function NewArrivalCard({
     }
   };
 
-  const handleFavoritePress = () => {
+  // CRITICAL: Stop event propagation to parent card
+  const handleFavoritePress = (e: GestureResponderEvent) => {
+    e.stopPropagation();
+
+    // Only animate when ADDING favorite, not removing
+    if (!isLiked) {
+      haptics.addFavorite();
+
+      // Scale animation
+      favoriteScale.value = withSequence(
+        withSpring(1.3, { damping: 10, stiffness: 400 }),
+        withSpring(1, { damping: 15, stiffness: 300 })
+      );
+
+      // Trigger fly animation only when adding
+      if (favoriteButtonRef.current) {
+        favoriteButtonRef.current.measureInWindow((x, y, width, height) => {
+          triggerFavoriteFly(image, x + width / 2 - 30, y - 30);
+        });
+      }
+    } else {
+      haptics.buttonPress();
+    }
+
     toggleFavorite({ id, tag, name, price, image });
   };
 
+  // CRITICAL: Stop event propagation to parent card
+  const handleAddToCart = (e: GestureResponderEvent) => {
+    e.stopPropagation();
+
+    haptics.addToCart();
+
+    // Scale animation
+    addButtonScale.value = withSequence(
+      withSpring(1.4, { damping: 10, stiffness: 400 }),
+      withSpring(1, { damping: 15, stiffness: 300 })
+    );
+
+    // Trigger fly animation
+    if (addButtonRef.current) {
+      addButtonRef.current.measureInWindow((x, y, width, height) => {
+        triggerCartFly(image, x - 20, y - 30);
+      });
+    }
+
+    onAddPress?.();
+  };
+
+  const handleCardPress = () => {
+    haptics.buttonPress();
+    cardScale.value = withSequence(
+      withTiming(0.97, { duration: 50 }),
+      withSpring(1, { damping: 15, stiffness: 300 })
+    );
+    onPress?.();
+  };
+
+  // Animated styles
+  const cardAnimatedStyle = useAnimatedStyle(() => ({
+    transform: [{ scale: cardScale.value }],
+  }));
+
+  const addButtonAnimatedStyle = useAnimatedStyle(() => ({
+    transform: [{ scale: addButtonScale.value }],
+  }));
+
+  const favoriteAnimatedStyle = useAnimatedStyle(() => ({
+    transform: [{ scale: favoriteScale.value }],
+  }));
+
   return (
-    <TouchableOpacity
-      activeOpacity={0.9}
-      onPress={onPress}
-      style={[styles.container, style]}
+    <Pressable
+      onPress={handleCardPress}
+      style={({ pressed }) => [
+        styles.container,
+        style,
+        pressed && Platform.OS !== "web" && { opacity: 0.95 },
+      ]}
     >
-      {/* Image container */}
-      <View style={styles.imageContainer}>
-        <Image source={image} style={styles.productImage} />
+      <Animated.View style={cardAnimatedStyle}>
+        {/* Image container */}
+        <View style={styles.imageContainer}>
+          <Image source={image} style={styles.productImage} />
 
-        {/* Favorite Button */}
-        <TouchableOpacity
-          style={[
-            styles.favoriteButton,
-            isLiked && styles.favoriteButtonActive,
-          ]}
-          onPress={handleFavoritePress}
-          activeOpacity={0.8}
-        >
-          <Ionicons
-            name={isLiked ? "heart" : "heart-outline"}
-            size={16}
-            color={isLiked ? "#EF4444" : "#94A3B8"}
-          />
-        </TouchableOpacity>
-      </View>
-
-      {/* Tag badge */}
-      <View style={[styles.tagBadge, { backgroundColor: getTagColor() }]}>
-        <Text style={styles.tagText}>{tag}</Text>
-      </View>
-
-      {/* Product info */}
-      <View style={styles.infoContainer}>
-        <Text style={styles.name} numberOfLines={1}>
-          {name}
-        </Text>
-
-        <View style={styles.priceRow}>
-          <Text style={styles.price}>{price}</Text>
-
-          <TouchableOpacity
-            style={styles.addButton}
-            activeOpacity={0.85}
-            onPress={onAddPress}
-          >
-            <Text style={styles.addButtonText}>+</Text>
-          </TouchableOpacity>
+          {/* Favorite Button - with stopPropagation */}
+          <Animated.View style={[styles.favoriteWrapper, favoriteAnimatedStyle]}>
+            <Pressable
+              ref={favoriteButtonRef as any}
+              style={[
+                styles.favoriteButton,
+                isLiked && styles.favoriteButtonActive,
+              ]}
+              onPress={handleFavoritePress}
+              onStartShouldSetResponder={() => true}
+            >
+              <Ionicons
+                name={isLiked ? "heart" : "heart-outline"}
+                size={16}
+                color={isLiked ? "#EF4444" : "#94A3B8"}
+              />
+            </Pressable>
+          </Animated.View>
         </View>
-      </View>
-    </TouchableOpacity>
+
+        {/* Tag badge */}
+        <View style={[styles.tagBadge, { backgroundColor: getTagColor() }]}>
+          <Text style={styles.tagText}>{tag}</Text>
+        </View>
+
+        {/* Product info */}
+        <View style={styles.infoContainer}>
+          <Text style={styles.name} numberOfLines={1}>
+            {name}
+          </Text>
+
+          <View style={styles.priceRow}>
+            <Text style={styles.price}>{price}</Text>
+
+            {/* Add to Cart Button - with stopPropagation */}
+            <Animated.View style={addButtonAnimatedStyle}>
+              <Pressable
+                ref={addButtonRef as any}
+                style={({ pressed }) => [
+                  styles.addButton,
+                  pressed && { opacity: 0.8 },
+                ]}
+                onPress={handleAddToCart}
+                onStartShouldSetResponder={() => true}
+              >
+                <Ionicons name="add" size={20} color="#FFFFFF" />
+              </Pressable>
+            </Animated.View>
+          </View>
+        </View>
+      </Animated.View>
+    </Pressable>
   );
 }
 
@@ -135,10 +238,12 @@ const styles = StyleSheet.create({
     height: "100%",
     resizeMode: "contain",
   },
-  favoriteButton: {
+  favoriteWrapper: {
     position: "absolute",
     top: 10,
     right: 10,
+  },
+  favoriteButton: {
     width: 30,
     height: 30,
     borderRadius: 15,
@@ -199,11 +304,5 @@ const styles = StyleSheet.create({
     shadowRadius: 6,
     shadowOffset: { width: 0, height: 3 },
     elevation: 3,
-  },
-  addButtonText: {
-    color: "#FFFFFF",
-    fontSize: 20,
-    fontWeight: "700",
-    lineHeight: 22,
   },
 });

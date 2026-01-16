@@ -41,10 +41,10 @@ export type {
 // Voucher Service
 export {
     calculateDiscountAmount, formatVoucherDiscount,
-    isVoucherValid, voucherService
+    isVoucherValid, userVoucherService, voucherService
 } from './voucherService';
 export type {
-    DiscountCalculation, DiscountType, Voucher, VoucherCheckResult
+    DiscountCalculation, DiscountType, SaveVoucherResult, UserVoucher, Voucher, VoucherCheckResult
 } from './voucherService';
 
 // User Service
@@ -54,15 +54,48 @@ export type {
     ChangePasswordRequest, UpdateProfileRequest, UserAddress, User as UserProfile
 } from './userService';
 
-// MoMo Payment Service
+// VNPay Payment Service (Replaces MoMo)
 export {
-    createMoMoPayment,
-    checkMoMoPaymentStatus,
-    simulateMoMoPayment,
-} from './momoService';
+    checkVNPayPaymentStatus, confirmVNPayPayment, createVNPayPayment, simulateVNPayPayment, vnpayService
+} from './vnpayService';
 export type {
-    CreatePaymentRequest,
-    CreatePaymentResponse,
-    PaymentStatusResponse,
-    MoMoPaymentType,
-} from './momoService';
+    CreateVNPayPaymentRequest,
+    CreateVNPayPaymentResponse, VNPaySimulateResponse, VNPayStatusResponse
+} from './vnpayService';
+
+// Review Service
+export { reviewService } from './reviewService';
+export type { CheckReviewedResponse, CreateReviewRequest, Review, ReviewResponse, ReviewSummary, ReviewSummaryResponse, ReviewsResponse, UpdateReviewRequest } from './reviewService';
+
+// Minigame Service
+export * from './minigameService';
+
+// Payment History Service
+export {
+    countMyPayments,
+    formatCurrency,
+    formatDateTime,
+    getDisplayTime,
+    getGatewayDisplayName,
+    getMyPaymentDetail,
+    getMyPaymentHistory,
+    getStatusColor as getPaymentStatusColor
+} from './paymentHistoryService';
+export type {
+    OrderItemSummary,
+    PaymentDetail,
+    PaymentHistoryItem,
+    PaymentHistoryResponse,
+    PaymentStatus
+} from './paymentHistoryService';
+
+// Shipping Service
+export { shippingService } from './shippingService';
+export type {
+    CheckoutPreviewRequest,
+    CheckoutPreviewResponse,
+    ProvinceDTO,
+    ShippingCalculateRequest,
+    ShippingCalculateResponse
+} from './shippingService';
+

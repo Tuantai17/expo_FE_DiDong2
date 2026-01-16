@@ -4,5 +4,9 @@
  * Export all custom hooks
  */
 
-export { useMoMoPayment } from './useMoMoPayment';
-export type { MoMoPaymentState, UseMoMoPaymentResult } from './useMoMoPayment';
+// VNPay Payment Hook (Replaces MoMo)
+export { useVNPayPayment } from './useVNPayPayment';
+export type { UseVNPayPaymentResult, VNPayPaymentState } from './useVNPayPayment';
+
+// Voucher Hook
+export { useVouchers } from './useVouchers';

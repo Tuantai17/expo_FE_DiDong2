@@ -101,6 +101,7 @@ export interface User {
     fullName?: string;       // Tên đầy đủ (nếu có)
     phoneNumber?: string;
     address?: string;
+    avatar?: string;         // URL ảnh đại diện
     role: "USER" | "ADMIN" | "CUSTOMER";
     isActive?: boolean;
 }
@@ -193,6 +194,7 @@ export const isAuthenticated = async (): Promise<boolean> => {
 export interface UpdateProfileRequest {
     name: string;
     email: string;
+    phone?: string;
 }
 
 /**
@@ -204,6 +206,26 @@ export const updateUserProfile = async (
     data: UpdateProfileRequest
 ): Promise<User> => {
     const response = await api.put<User>(`/api/users/${userId}/profile`, data);
+    return response.data;
+};
+
+/**
+ * Upload user avatar
+ * POST /api/users/{id}/avatar
+ */
+export const uploadAvatar = async (
+    userId: number,
+    file: FormData
+): Promise<{ message: string; avatar: string }> => {
+    const response = await api.post<{ message: string; avatar: string }>(
+        `/api/users/${userId}/avatar`,
+        file,
+        {
+            headers: {
+                'Content-Type': 'multipart/form-data',
+            },
+        }
+    );
     return response.data;
 };
 
@@ -278,13 +300,20 @@ export interface AddToCartRequest {
 }
 
 export interface CartItemResponse {
+    id: number;              // Cart item ID (for deletion)
     productId: number;
-    productName: string;
-    productPhoto: string;
+    productTitle?: string;   // From backend DTO
+    productName?: string;    // Legacy field
+    productImage?: string;   // From backend DTO
+    productPhoto?: string;   // Legacy field
+    size?: string;
+    color?: string;
     quantity: number;
-    productPrice: number;
-    discount: number;
-    totalPrice: number;
+    price?: number;          // From backend DTO
+    productPrice?: number;   // Legacy field
+    discount?: number;
+    subtotal?: number;       // From backend DTO
+    totalPrice?: number;     // Legacy field
 }
 
 export interface CartResponse {
@@ -314,11 +343,20 @@ export const getCartByUserApi = async (userId: number): Promise<CartResponse> =>
 };
 
 /**
- * Remove item from cart
+ * Remove item from cart by productId (legacy)
  * DELETE /api/carts/{userId}/remove/{productId}
  */
-export const removeFromCartApi = async (userId: number, productId: number): Promise<string> => {
-    const response = await api.delete<string>(`/api/carts/${userId}/remove/${productId}`);
+export const removeFromCartApi = async (userId: number, productId: number): Promise<{ success: boolean; message: string }> => {
+    const response = await api.delete<{ success: boolean; message: string }>(`/api/carts/${userId}/remove/${productId}`);
+    return response.data;
+};
+
+/**
+ * Remove cart item by cartItemId (preferred method)
+ * DELETE /api/carts/items/{itemId}
+ */
+export const removeCartItemByIdApi = async (itemId: number): Promise<{ success: boolean; message: string }> => {
+    const response = await api.delete<{ success: boolean; message: string }>(`/api/carts/items/${itemId}`);
     return response.data;
 };
 
@@ -329,5 +367,93 @@ export const removeFromCartApi = async (userId: number, productId: number): Prom
 export const clearCartApi = async (userId: number): Promise<{ message: string }> => {
     const response = await api.delete<{ message: string }>(`/api/carts/user/${userId}/clear`);
     return response.data;
+};
+
+/**
+ * Retry payment for an order
+ * POST /api/orders/{orderId}/retry-payment
+ */
+export const retryPaymentApi = async (orderId: number): Promise<{ success: boolean; payUrl?: string; message?: string }> => {
+    const response = await api.post<{ success: boolean; payUrl?: string; message?: string }>(`/api/orders/${orderId}/retry-payment`);
+    return response.data;
+};
+
+// =================== RELATED PRODUCTS API =====================
+
+/**
+ * Get products by category
+ * GET /api/products/category/{categoryId}
+ */
+export const getProductsByCategory = async (categoryId: number, limit = 10): Promise<Product[]> => {
+    const response = await api.get<{ content?: Product[] } | Product[]>(`/api/products/category/${categoryId}`, {
+        params: { page: 0, size: limit },
+    });
+    // API có thể trả về paginated response hoặc array trực tiếp
+    return Array.isArray(response.data) ? response.data : (response.data.content || []);
+};
+
+// =================== CHAT IMAGE UPLOAD API =====================
+
+import type { ImageSearchResult } from '../types/chatImage';
+
+/**
+ * Upload image to chat and get product suggestions
+ * POST /api/chat-images/upload
+ * @param sessionId Chat session ID
+ * @param imageUri Local image URI
+ * @returns ImageSearchResult with analysis and suggested products
+ */
+export const uploadChatImage = async (
+    sessionId: number,
+    imageUri: string
+): Promise<ImageSearchResult> => {
+    try {
+        console.log('[API] Uploading chat image...');
+        console.log('[API] Session ID:', sessionId);
+        console.log('[API] Image URI:', imageUri);
+
+        // Create FormData
+        const formData = new FormData();
+        formData.append('sessionId', sessionId.toString());
+        formData.append('senderType', 'USER');
+
+        // Get filename and extension from URI
+        const filename = imageUri.split('/').pop() || 'image.jpg';
+        const match = /\.(\w+)$/.exec(filename);
+        const type = match ? `image/${match[1]}` : 'image/jpeg';
+
+        // Append image file
+        formData.append('image', {
+            uri: imageUri,
+            type: type,
+            name: filename,
+        } as any);
+
+        console.log('[API] FormData created, uploading...');
+
+        // Upload with multipart/form-data
+        const response = await api.post<ImageSearchResult>(
+            '/api/chat-images/upload',
+            formData,
+            {
+                headers: {
+                    'Content-Type': 'multipart/form-data',
+                },
+                timeout: 45000, // 45s timeout for image analysis
+            }
+        );
+
+        console.log('[API] ✅ Upload successful');
+        console.log('[API] Found', response.data.suggestedProducts?.length || 0, 'products');
+
+        return response.data;
+    } catch (error: any) {
+        console.error('[API] ❌ Upload failed:', error.message);
+        if (error.response) {
+            console.error('[API] Status:', error.response.status);
+            console.error('[API] Data:', error.response.data);
+        }
+        throw error;
+    }
 };
 

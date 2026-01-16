@@ -1,16 +1,18 @@
 /**
- * Checkout Screen with MoMo Payment Integration
- * ==============================================
- * Order checkout with real product data from CartContext
- * Includes: order summary, shipping info, payment method selection (COD, MoMo QR, MoMo Card)
+ * Checkout Screen with Cross-Platform VNPay Integration
+ * ======================================================
+ * Handles payment differently based on platform:
+ * - Web: Browser redirect to VNPay
+ * - iOS/Android: WebView screen for VNPay
  */
 
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
-import { useRouter } from "expo-router";
-import React, { useState, useCallback, useEffect } from "react";
+import { useLocalSearchParams, useRouter } from "expo-router";
+import React, { useEffect, useState } from "react";
 import {
     ActivityIndicator,
     Alert,
+    Dimensions,
     Image,
     KeyboardAvoidingView,
     Platform,
@@ -20,108 +22,207 @@ import {
     TextInput,
     TouchableOpacity,
     View,
-    Modal,
-    Animated,
-    Dimensions,
 } from "react-native";
+import AddressSelectorModal from "../../components/checkout/AddressSelectorModal";
+import LocationPickerModal from "../../components/checkout/LocationPickerModal";
+import { DualVoucherSection } from "../../components/voucher";
 import { useAuth } from "../../context/AuthContext";
 import { useCart } from "../../context/CartContext";
 import { useOrders } from "../../context/OrderContext";
+import { useVNPayPayment } from "../../hooks/useVNPayPayment";
+import { Address, addressService } from "../../services/addressService";
+import { shippingService } from "../../services/shippingService";
 import { showErrorAlert } from "../../utils/alert";
-import { useMoMoPayment } from "../../hooks/useMoMoPayment";
-import QRCode from "react-native-qrcode-svg";
-import * as Linking from "expo-linking";
+import { isWeb, openVNPayWeb } from "../../utils/vnpayPlatform";
 
 // =================== CONSTANTS =====================
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
-const MOMO_PINK = '#AE2070';
-const MOMO_LIGHT_PINK = '#FFF0F5';
+const VNPAY_BLUE = '#0066CC';
+const VNPAY_LIGHT_BLUE = '#E6F0FF';
 
 // =================== TYPES =====================
 
-type PaymentMethod = "cod" | "card" | "momo" | "vnpay";
-type MoMoPaymentType = "QR" | "CARD";
+type PaymentMethod = "cod" | "vnpay" | "banking";
 
 // =================== COMPONENT =====================
 
 export default function CheckoutScreen() {
     const router = useRouter();
-    const { items, clearCart } = useCart();
-    const { user } = useAuth();
+    const params = useLocalSearchParams<{ error?: string; orderId?: string; vnp_ResponseCode?: string }>();
+    const { items, clearCart, refreshCart } = useCart();
+    const { user, refreshUser } = useAuth();
     const { createOrder } = useOrders();
 
-    // MoMo Payment Hook
+    // VNPay Payment Hook
     const {
-        isLoading: momoLoading,
-        error: momoError,
+        isLoading: vnpayLoading,
+        error: vnpayError,
         paymentUrl,
-        qrCodeUrl,
-        paymentStatus,
         initiatePayment,
-        verifyPayment,
-        simulatePayment,
-        resetState: resetMoMoState,
-    } = useMoMoPayment();
+        resetState: resetVNPayState,
+    } = useVNPayPayment();
 
     // =================== STATE =====================
 
-    const [fullName, setFullName] = useState(user?.fullName || user?.username || "");
+    const [fullName, setFullName] = useState(user?.fullName || user?.name || user?.username || "");
     const [phone, setPhone] = useState(user?.phoneNumber || "");
     const [address, setAddress] = useState(user?.address || "");
     const [note, setNote] = useState("");
     const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>("cod");
     const [isLoading, setIsLoading] = useState(false);
 
-    // MoMo Modal State
-    const [showMoMoModal, setShowMoMoModal] = useState(false);
-    const [momoType, setMoMoType] = useState<MoMoPaymentType>("QR");
-    const [currentOrderId, setCurrentOrderId] = useState<number | null>(null);
-    const [countdown, setCountdown] = useState(300); // 5 minutes
-    const [fadeAnim] = useState(new Animated.Value(0));
+    // Location Picker Modal State
+    const [showLocationPicker, setShowLocationPicker] = useState(false);
+
+    // Address Selector State
+    const [savedAddresses, setSavedAddresses] = useState<Address[]>([]);
+    const [showAddressSelector, setShowAddressSelector] = useState(false);
+    const [selectedAddressId, setSelectedAddressId] = useState<number | null>(null);
+
+    // Voucher State
+    const [voucherDiscount, setVoucherDiscount] = useState(0);
+    const [appliedVoucherCode, setAppliedVoucherCode] = useState('');
+
+    // Shipping State (Dynamic)
+    const [shippingFee, setShippingFee] = useState(30000);
+    const [shippingLoading, setShippingLoading] = useState(false);
+    const [shippingVoucherDiscount, setShippingVoucherDiscount] = useState(0);
+    const [appliedShippingVoucherCode, setAppliedShippingVoucherCode] = useState('');
 
     // =================== EFFECTS =====================
 
-    // Countdown timer for QR
+    // Refresh user info on mount to ensure latest data
     useEffect(() => {
-        if (showMoMoModal && momoType === 'QR') {
-            const timer = setInterval(() => {
-                setCountdown(prev => {
-                    if (prev <= 1) {
-                        clearInterval(timer);
-                        return 0;
+        refreshUser();
+    }, []);
+
+    // Auto-fill form data when user info updates
+    useEffect(() => {
+        if (user) {
+            // Prioritize fullName > name > username
+            const nameToUse = user.fullName || user.name || user.username || "";
+            setFullName(nameToUse);
+            setPhone(user.phoneNumber || "");
+            setAddress(user.address || "");
+            
+            loadSavedAddresses();
+        }
+    }, [user]);
+
+    const loadSavedAddresses = async () => {
+        try {
+            if (user?.id) {
+                const addrs = await addressService.getUserAddresses(user.id);
+                setSavedAddresses(addrs);
+                // Auto select default if no address entered yet
+                if (!address) {
+                    const defaultAddr = addrs.find(a => a.isDefault);
+                    if (defaultAddr) {
+                        fillAddress(defaultAddr);
                     }
-                    return prev - 1;
-                });
-            }, 1000);
-            return () => clearInterval(timer);
-        } else {
-            setCountdown(300);
+                }
+            }
+        } catch (error) {
+            console.log("Failed to load addresses", error);
         }
-    }, [showMoMoModal, momoType]);
+    };
 
-    // Handle MoMo error
-    useEffect(() => {
-        if (momoError) {
-            Alert.alert("Lỗi thanh toán", momoError);
-        }
-    }, [momoError]);
+    const fillAddress = (addr: Address) => {
+        setFullName(addr.fullName);
+        setPhone(addr.phone);
+        // Combine address parts
+        const fullAddr = [addr.address, addr.city, addr.country].filter(Boolean).join(", ");
+        setAddress(fullAddr);
+        setSelectedAddressId(addr.id);
+    };
 
-    // Handle payment status change
+    // Handle VNPay error
     useEffect(() => {
-        if (paymentStatus?.isPaid || paymentStatus?.paymentStatus === 'SUCCESS') {
-            handlePaymentSuccess();
+        if (vnpayError) {
+            Alert.alert("Lỗi thanh toán", vnpayError);
         }
-    }, [paymentStatus]);
+    }, [vnpayError]);
+
+    // Handle return from VNPay with failed payment
+    useEffect(() => {
+        if (params.error) {
+            console.log('🔙 [Checkout] Returned from failed VNPay payment');
+            console.log('📝 [Checkout] Error:', params.error, 'ResponseCode:', params.vnp_ResponseCode);
+            
+            // Refresh cart to ensure items are loaded from server
+            refreshCart();
+            
+            // Show error message
+            const errorMessages: Record<string, string> = {
+                'Payment+failed': 'Thanh toán không thành công',
+                'Payment+cancelled': 'Bạn đã hủy thanh toán',
+            };
+            
+            const errorMsg = errorMessages[params.error] || 'Thanh toán thất bại';
+            
+            Alert.alert(
+                'Thanh toán thất bại',
+                `${errorMsg}. Giỏ hàng của bạn vẫn được giữ nguyên. Bạn có thể thử lại hoặc chọn phương thức thanh toán khác.`,
+                [
+                    { text: 'Thử lại VNPay', onPress: () => setPaymentMethod('vnpay') },
+                    { text: 'Thanh toán COD', onPress: () => setPaymentMethod('cod') },
+                    { text: 'Đóng', style: 'cancel' }
+                ]
+            );
+        }
+    }, [params.error]);
 
     // =================== CALCULATIONS =====================
 
     const totalItems = items.reduce((sum, item) => sum + item.qty, 0);
     const subtotal = items.reduce((sum, item) => sum + item.price * item.qty, 0);
-    const FREE_SHIPPING_THRESHOLD = 500000;
-    const SHIPPING_FEE = 30000;
-    const shipping = subtotal >= FREE_SHIPPING_THRESHOLD ? 0 : (items.length > 0 ? SHIPPING_FEE : 0);
-    const total = subtotal + shipping;
+    
+    // Final shipping fee after discount
+    const finalShippingFee = Math.max(0, shippingFee - shippingVoucherDiscount);
+    
+    // Total = subtotal - order discount + final shipping fee
+    const total = subtotal - voucherDiscount + finalShippingFee;
+
+    // Calculate shipping when address changes
+    useEffect(() => {
+        const calculateShipping = async () => {
+            if (!address || items.length === 0) {
+                setShippingFee(0);
+                return;
+            }
+            
+            setShippingLoading(true);
+            try {
+                const result = await shippingService.calculateShippingFromAddress(address, subtotal);
+                console.log('📦 [Checkout] Shipping calculated:', result);
+                setShippingFee(result.shippingFee);
+            } catch (error) {
+                console.error('[Checkout] Shipping calc error:', error);
+                // Fallback to offline calculation
+                const fallback = shippingService.calculateShippingOffline(address, subtotal);
+                setShippingFee(fallback.shippingFee);
+            } finally {
+                setShippingLoading(false);
+            }
+        };
+        
+        calculateShipping();
+    }, [address, subtotal, items.length]);
+
+    // Handler for ORDER voucher applied
+    const handleVoucherApplied = (discountAmount: number, voucherCode: string) => {
+        console.log('🎟️ [Checkout] Order voucher applied:', voucherCode, 'Discount:', discountAmount);
+        setVoucherDiscount(discountAmount);
+        setAppliedVoucherCode(voucherCode);
+    };
+
+    // Handler for SHIPPING voucher applied
+    const handleShippingVoucherApplied = (discountAmount: number, voucherCode: string) => {
+        console.log('🚚 [Checkout] Shipping voucher applied:', voucherCode, 'Discount:', discountAmount);
+        setShippingVoucherDiscount(Math.min(discountAmount, shippingFee)); // Can't discount more than shipping fee
+        setAppliedShippingVoucherCode(voucherCode);
+    };
 
     // =================== HELPERS =====================
 
@@ -129,13 +230,23 @@ export default function CheckoutScreen() {
         return new Intl.NumberFormat("vi-VN").format(price) + " ₫";
     };
 
-    const formatTime = (seconds: number): string => {
-        const mins = Math.floor(seconds / 60);
-        const secs = seconds % 60;
-        return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
-    };
-
     // =================== HANDLERS =====================
+
+    // Handle back navigation - go to home if coming from VNPay redirect (no history)
+    const handleGoBack = () => {
+        // If we came from VNPay failed redirect, go to home page
+        // because there's no navigation history to go back to
+        if (params.error || params.orderId) {
+            router.replace('/(main)');
+        } else {
+            // Try normal back, fallback to home if it fails
+            try {
+                router.back();
+            } catch (e) {
+                router.replace('/(main)');
+            }
+        }
+    };
 
     const validateForm = (): boolean => {
         if (!fullName.trim()) {
@@ -166,11 +277,10 @@ export default function CheckoutScreen() {
     };
 
     const createOrderOnBackend = async (): Promise<number | null> => {
-        const paymentMethodMap: Record<PaymentMethod, "COD" | "MOMO" | "BANKING"> = {
+        const paymentMethodMap: Record<PaymentMethod, "COD" | "VNPAY" | "BANKING"> = {
             cod: "COD",
-            momo: "MOMO",
-            card: "BANKING",
-            vnpay: "BANKING",
+            vnpay: "VNPAY",
+            banking: "BANKING",
         };
 
         const orderInput = {
@@ -186,12 +296,18 @@ export default function CheckoutScreen() {
                 fullName,
                 phone,
                 address,
+                addressId: selectedAddressId || undefined,
                 note,
             },
             paymentMethod: paymentMethodMap[paymentMethod],
             subtotal,
-            shippingFee: shipping,
+            shippingFee: finalShippingFee, // Use final shipping fee after discount
             total,
+            voucherCode: appliedVoucherCode || undefined,
+            discountAmount: voucherDiscount || undefined,
+            // Shipping voucher info
+            shippingVoucherCode: appliedShippingVoucherCode || undefined,
+            shippingDiscountAmount: shippingVoucherDiscount || undefined,
         };
 
         try {
@@ -205,34 +321,12 @@ export default function CheckoutScreen() {
         }
     };
 
-    const handlePaymentSuccess = () => {
-        setShowMoMoModal(false);
-        clearCart();
-        resetMoMoState();
-
-        Alert.alert(
-            "🎉 Thanh toán thành công!",
-            `Đơn hàng của bạn đã được thanh toán thành công.\nMã đơn: #${currentOrderId}`,
-            [
-                {
-                    text: "Xem đơn hàng",
-                    onPress: () => router.replace({
-                        pathname: "/product/order-success",
-                        params: {
-                            total: total.toString(),
-                            name: fullName,
-                            itemCount: totalItems.toString(),
-                            paymentMethod: "momo",
-                            orderId: currentOrderId?.toString() || "",
-                            status: "success", // Đánh dấu thanh toán MoMo thành công
-                        },
-                    }),
-                },
-            ]
-        );
-    };
-
-    const handleMoMoPayment = async () => {
+    /**
+     * Handle VNPay payment - Platform aware
+     * - Web: Redirect browser to VNPay
+     * - Native: Navigate to WebView screen
+     */
+    const handleVNPayPayment = async () => {
         if (!validateForm()) return;
         if (items.length === 0) {
             showErrorAlert("Giỏ hàng trống", "Vui lòng thêm sản phẩm vào giỏ hàng.");
@@ -250,42 +344,59 @@ export default function CheckoutScreen() {
                 return;
             }
 
-            setCurrentOrderId(orderId);
+            console.log("📦 Order created:", orderId);
 
-            // Step 2: Initiate MoMo payment
-            const success = await initiatePayment({
+            // Step 2: Initiate VNPay payment
+            const result = await initiatePayment({
                 orderId,
                 amount: total,
                 orderInfo: `Thanh toan don hang #${orderId} - ${fullName}`,
-            }, momoType);
+            });
 
-            if (success) {
-                // Show MoMo modal
-                setShowMoMoModal(true);
-                Animated.timing(fadeAnim, {
-                    toValue: 1,
-                    duration: 300,
-                    useNativeDriver: true,
-                }).start();
-            } else {
-                // If payment initiation failed but we still want to show the modal for Card payment
-                // This allows users to retry or see error message in modal
-                if (momoType === 'CARD') {
-                    Alert.alert(
-                        "Lỗi MoMo API",
-                        "Không thể tạo link thanh toán MoMo. Backend có thể chưa được cấu hình đúng.\n\nBạn có thể:\n1. Thử lại sau\n2. Chọn phương thức QR code\n3. Chọn phương thức COD",
-                        [
-                            { text: "Thử lại", onPress: () => handleMoMoPayment() },
-                            { text: "Chọn QR", onPress: () => { setMoMoType('QR'); } },
-                            { text: "Đóng", style: "cancel" }
-                        ]
-                    );
-                } else {
-                    showErrorAlert("Lỗi", "Không thể kết nối đến MoMo. Vui lòng thử lại.");
-                }
+            console.log("💳 Payment result:", result);
+
+            if (!result.success || !result.payUrl) {
+                Alert.alert(
+                    "Lỗi VNPay",
+                    "Không thể tạo thanh toán VNPay. Bạn có thể thử lại hoặc chọn phương thức khác.",
+                    [
+                        { text: "Thử lại", onPress: () => handleVNPayPayment() },
+                        { text: "Thanh toán COD", onPress: () => setPaymentMethod('cod') },
+                        { text: "Đóng", style: "cancel" }
+                    ]
+                );
+                return;
             }
+
+            // Step 3: Open VNPay based on platform
+            if (isWeb()) {
+                // WEB: Redirect browser to VNPay
+                console.log("🌐 [Checkout] Web platform - Redirecting to VNPay");
+                
+                // IMPORTANT: Do NOT clear cart here!
+                // Cart will be cleared only after successful payment confirmation
+                // This ensures cart is preserved if user cancels VNPay payment
+                console.log('📦 [Checkout] Cart preserved - will only clear after successful payment');
+
+                // Redirect to VNPay
+                openVNPayWeb(result.payUrl);
+            } else {
+                // NATIVE: Navigate to WebView screen
+                console.log("📱 [Checkout] Native platform - Opening WebView");
+                
+                router.push({
+                    pathname: '/product/vnpay-webview',
+                    params: {
+                        paymentUrl: result.payUrl,
+                        orderId: orderId.toString(),
+                        amount: total.toString(),
+                        customerName: fullName,
+                    },
+                });
+            }
+
         } catch (error: any) {
-            console.error("❌ MoMo payment error:", error);
+            console.error("❌ VNPay payment error:", error);
             showErrorAlert("Lỗi thanh toán", error.message || "Có lỗi xảy ra khi thanh toán.");
         } finally {
             setIsLoading(false);
@@ -304,7 +415,12 @@ export default function CheckoutScreen() {
         try {
             const orderId = await createOrderOnBackend();
             if (orderId) {
-                clearCart();
+                try {
+                    await clearCart();
+                    console.log('✅ [Checkout] Cart cleared after COD order success');
+                } catch (error) {
+                    console.error('❌ [Checkout] Error clearing cart:', error);
+                }
                 router.replace({
                     pathname: "/product/order-success",
                     params: {
@@ -327,68 +443,11 @@ export default function CheckoutScreen() {
     };
 
     const handlePlaceOrder = () => {
-        if (paymentMethod === 'momo') {
-            handleMoMoPayment();
+        if (paymentMethod === 'vnpay') {
+            handleVNPayPayment();
         } else {
             handleCODPayment();
         }
-    };
-
-    const handleCheckPaymentStatus = async () => {
-        if (currentOrderId) {
-            await verifyPayment(currentOrderId);
-        }
-    };
-
-    const handleSimulatePayment = async () => {
-        if (currentOrderId) {
-            Alert.alert(
-                "Mô phỏng thanh toán",
-                "Bạn muốn mô phỏng thanh toán thành công? (Chỉ dùng cho testing)",
-                [
-                    { text: "Hủy", style: "cancel" },
-                    {
-                        text: "Thanh toán thành công",
-                        onPress: async () => {
-                            await simulatePayment(currentOrderId, total);
-                        },
-                    },
-                ]
-            );
-        }
-    };
-
-    const handleOpenPaymentPage = async () => {
-        if (paymentUrl) {
-            try {
-                const canOpen = await Linking.canOpenURL(paymentUrl);
-                if (canOpen) {
-                    await Linking.openURL(paymentUrl);
-                } else {
-                    // Fallback: Try to open anyway
-                    await Linking.openURL(paymentUrl);
-                }
-            } catch (error) {
-                console.error('Error opening payment URL:', error);
-                Alert.alert(
-                    'Lỗi',
-                    'Không thể mở trang thanh toán. Vui lòng thử lại.',
-                    [{ text: 'OK' }]
-                );
-            }
-        } else {
-            Alert.alert(
-                'Thông báo',
-                'Chưa có link thanh toán. Vui lòng thử lại.',
-                [{ text: 'OK' }]
-            );
-        }
-    };
-
-    const closeMoMoModal = () => {
-        setShowMoMoModal(false);
-        resetMoMoState();
-        setCountdown(300);
     };
 
     // =================== PAYMENT METHODS CONFIG =====================
@@ -401,219 +460,21 @@ export default function CheckoutScreen() {
             desc: "Thanh toán bằng tiền mặt khi nhận hàng",
         },
         {
-            id: "card" as PaymentMethod,
-            icon: "card-outline",
-            title: "Thẻ tín dụng / Ghi nợ",
-            desc: "Visa, Mastercard, JCB",
-        },
-        {
-            id: "momo" as PaymentMethod,
-            icon: "wallet-outline",
-            title: "Ví MoMo",
-            desc: "Thanh toán qua ví điện tử MoMo",
-            isMoMo: true,
-        },
-        {
             id: "vnpay" as PaymentMethod,
-            icon: "globe-outline",
+            icon: "card-outline",
             title: "VNPay",
-            desc: "Thanh toán qua cổng VNPay",
+            desc: isWeb() 
+                ? "Thanh toán qua cổng VNPay (Chuyển hướng trình duyệt)"
+                : "Thanh toán qua cổng VNPay (ATM, Visa, MasterCard)",
+            isVNPay: true,
+        },
+        {
+            id: "banking" as PaymentMethod,
+            icon: "business-outline",
+            title: "Chuyển khoản ngân hàng",
+            desc: "Chuyển khoản trực tiếp đến tài khoản ngân hàng",
         },
     ];
-
-    // =================== RENDER MOMO MODAL =====================
-
-    const renderMoMoModal = () => (
-        <Modal
-            visible={showMoMoModal}
-            animationType="slide"
-            transparent={true}
-            onRequestClose={closeMoMoModal}
-        >
-            <Animated.View style={[styles.modalOverlay, { opacity: fadeAnim }]}>
-                <View style={styles.modalContainer}>
-                    {/* Modal Header */}
-                    <View style={styles.modalHeader}>
-                        <View style={styles.modalHeaderLeft}>
-                            <View style={styles.momoIconContainer}>
-                                <MaterialCommunityIcons name="wallet" size={24} color={MOMO_PINK} />
-                            </View>
-                            <View>
-                                <Text style={styles.modalHeaderTitle}>Thanh toán MoMo</Text>
-                                <Text style={styles.modalHeaderAmount}>{formatPrice(total)}</Text>
-                            </View>
-                        </View>
-                        <TouchableOpacity style={styles.modalCloseBtn} onPress={closeMoMoModal}>
-                            <Ionicons name="close" size={24} color="#666" />
-                        </TouchableOpacity>
-                    </View>
-
-                    {/* Payment Type Tabs */}
-                    <View style={styles.momoTabs}>
-                        <TouchableOpacity
-                            style={[styles.momoTab, momoType === 'QR' && styles.momoTabActive]}
-                            onPress={() => setMoMoType('QR')}
-                        >
-                            <Ionicons
-                                name="qr-code-outline"
-                                size={20}
-                                color={momoType === 'QR' ? MOMO_PINK : '#666'}
-                            />
-                            <Text style={[styles.momoTabText, momoType === 'QR' && styles.momoTabTextActive]}>
-                                Quét QR
-                            </Text>
-                        </TouchableOpacity>
-                        <TouchableOpacity
-                            style={[styles.momoTab, momoType === 'CARD' && styles.momoTabActive]}
-                            onPress={() => setMoMoType('CARD')}
-                        >
-                            <Ionicons
-                                name="card-outline"
-                                size={20}
-                                color={momoType === 'CARD' ? MOMO_PINK : '#666'}
-                            />
-                            <Text style={[styles.momoTabText, momoType === 'CARD' && styles.momoTabTextActive]}>
-                                Thẻ Card
-                            </Text>
-                        </TouchableOpacity>
-                    </View>
-
-                    {/* Content */}
-                    <ScrollView style={styles.modalContent} showsVerticalScrollIndicator={false}>
-                        {momoType === 'QR' ? (
-                            // QR Code View
-                            <View style={styles.qrContainer}>
-                                <Text style={styles.qrTitle}>Quét mã QR để thanh toán</Text>
-
-                                <View style={styles.qrCodeWrapper}>
-                                    {momoLoading ? (
-                                        <View style={styles.qrLoading}>
-                                            <ActivityIndicator size="large" color={MOMO_PINK} />
-                                            <Text style={styles.qrLoadingText}>Đang tạo mã QR...</Text>
-                                        </View>
-                                    ) : (qrCodeUrl || paymentUrl) ? (
-                                        <View style={styles.qrCodeBorder}>
-                                            <QRCode
-                                                value={qrCodeUrl || paymentUrl || `momo://payment?orderId=${currentOrderId}`}
-                                                size={180}
-                                                backgroundColor="white"
-                                                color="#000"
-                                            />
-                                        </View>
-                                    ) : (
-                                        <View style={styles.qrLoading}>
-                                            <Ionicons name="qr-code-outline" size={60} color="#ccc" />
-                                            <Text style={styles.qrLoadingText}>Không thể tạo mã QR</Text>
-                                        </View>
-                                    )}
-                                </View>
-
-                                <View style={styles.countdownContainer}>
-                                    <Ionicons name="time-outline" size={16} color="#666" />
-                                    <Text style={styles.countdownText}>
-                                        Còn lại: {formatTime(countdown)}
-                                    </Text>
-                                </View>
-
-                                {/* Instructions */}
-                                <View style={styles.instructionsBox}>
-                                    <Text style={styles.instructionsTitle}>Hướng dẫn thanh toán:</Text>
-                                    <View style={styles.instructionStep}>
-                                        <View style={styles.stepBadge}><Text style={styles.stepNum}>1</Text></View>
-                                        <Text style={styles.stepText}>Mở ứng dụng MoMo trên điện thoại</Text>
-                                    </View>
-                                    <View style={styles.instructionStep}>
-                                        <View style={styles.stepBadge}><Text style={styles.stepNum}>2</Text></View>
-                                        <Text style={styles.stepText}>Chọn "Quét mã" và quét mã QR ở trên</Text>
-                                    </View>
-                                    <View style={styles.instructionStep}>
-                                        <View style={styles.stepBadge}><Text style={styles.stepNum}>3</Text></View>
-                                        <Text style={styles.stepText}>Xác nhận thanh toán trên MoMo</Text>
-                                    </View>
-                                </View>
-                            </View>
-                        ) : (
-                            // Card Payment View
-                            <View style={styles.cardContainer}>
-                                <MaterialCommunityIcons name="credit-card-outline" size={48} color={MOMO_PINK} />
-                                <Text style={styles.cardTitle}>Thanh toán bằng thẻ</Text>
-                                <Text style={styles.cardDesc}>
-                                    Thanh toán qua thẻ ATM/Visa/Mastercard liên kết với MoMo
-                                </Text>
-
-                                <View style={styles.cardLogos}>
-                                    <View style={styles.cardLogoItem}>
-                                        <MaterialCommunityIcons name="credit-card" size={28} color="#1A1F71" />
-                                        <Text style={styles.cardLogoLabel}>Visa</Text>
-                                    </View>
-                                    <View style={styles.cardLogoItem}>
-                                        <MaterialCommunityIcons name="credit-card-outline" size={28} color="#EB001B" />
-                                        <Text style={styles.cardLogoLabel}>Mastercard</Text>
-                                    </View>
-                                    <View style={styles.cardLogoItem}>
-                                        <MaterialCommunityIcons name="credit-card-chip" size={28} color="#006491" />
-                                        <Text style={styles.cardLogoLabel}>JCB</Text>
-                                    </View>
-                                </View>
-
-                                <TouchableOpacity
-                                    style={[styles.openPaymentBtn, !paymentUrl && styles.openPaymentBtnDisabled]}
-                                    onPress={handleOpenPaymentPage}
-                                    disabled={!paymentUrl || momoLoading}
-                                >
-                                    {momoLoading ? (
-                                        <ActivityIndicator size="small" color="#fff" />
-                                    ) : (
-                                        <>
-                                            <MaterialCommunityIcons name="open-in-new" size={20} color="#fff" />
-                                            <Text style={styles.openPaymentText}>Mở trang thanh toán</Text>
-                                        </>
-                                    )}
-                                </TouchableOpacity>
-
-                                <Text style={styles.cardNote}>
-                                    * Bạn sẽ được chuyển đến trang thanh toán của MoMo
-                                </Text>
-                            </View>
-                        )}
-                    </ScrollView>
-
-                    {/* Modal Footer */}
-                    <View style={styles.modalFooter}>
-                        <TouchableOpacity
-                            style={styles.checkStatusBtn}
-                            onPress={handleCheckPaymentStatus}
-                            disabled={momoLoading}
-                        >
-                            {momoLoading ? (
-                                <ActivityIndicator size="small" color={MOMO_PINK} />
-                            ) : (
-                                <>
-                                    <Ionicons name="refresh" size={18} color={MOMO_PINK} />
-                                    <Text style={styles.checkStatusText}>Kiểm tra trạng thái</Text>
-                                </>
-                            )}
-                        </TouchableOpacity>
-
-                        {/* Test button for simulation */}
-                        {__DEV__ && (
-                            <TouchableOpacity
-                                style={styles.simulateBtn}
-                                onPress={handleSimulatePayment}
-                            >
-                                <Text style={styles.simulateBtnText}>🧪 Test: Mô phỏng thành công</Text>
-                            </TouchableOpacity>
-                        )}
-
-                        <View style={styles.securityBadge}>
-                            <Ionicons name="shield-checkmark" size={14} color="#10B981" />
-                            <Text style={styles.securityText}>Giao dịch được bảo mật bởi MoMo</Text>
-                        </View>
-                    </View>
-                </View>
-            </Animated.View>
-        </Modal>
-    );
 
     // =================== RENDER =====================
 
@@ -624,7 +485,7 @@ export default function CheckoutScreen() {
         >
             {/* Header */}
             <View style={styles.headerRow}>
-                <TouchableOpacity style={styles.backButton} onPress={() => router.back()}>
+                <TouchableOpacity style={styles.backButton} onPress={handleGoBack}>
                     <Ionicons name="chevron-back" size={20} color="#0F172A" />
                 </TouchableOpacity>
                 <Text style={styles.headerTitle}>Thanh toán</Text>
@@ -676,19 +537,62 @@ export default function CheckoutScreen() {
                             <Text style={styles.priceLabel}>Tạm tính</Text>
                             <Text style={styles.priceValue}>{formatPrice(subtotal)}</Text>
                         </View>
+                        
+                        {/* Shipping Fee Row */}
                         <View style={styles.priceRow}>
                             <View style={styles.shippingLabel}>
                                 <Text style={styles.priceLabel}>Phí vận chuyển</Text>
-                                {shipping === 0 && (
+                                {shippingLoading && (
+                                    <ActivityIndicator size="small" color="#5B9EE1" style={{ marginLeft: 8 }} />
+                                )}
+                                {!shippingLoading && shippingFee === 0 && items.length > 0 && (
                                     <View style={styles.freeBadge}>
                                         <Text style={styles.freeText}>FREE</Text>
                                     </View>
                                 )}
                             </View>
-                            <Text style={[styles.priceValue, shipping === 0 && styles.freeValue]}>
-                                {shipping === 0 ? "Miễn phí" : formatPrice(shipping)}
-                            </Text>
+                            <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                                {shippingVoucherDiscount > 0 && shippingFee > 0 && (
+                                    <Text style={{ color: '#94A3B8', textDecorationLine: 'line-through', fontSize: 13, marginRight: 8 }}>
+                                        {formatPrice(shippingFee)}
+                                    </Text>
+                                )}
+                                <Text style={[styles.priceValue, finalShippingFee === 0 && items.length > 0 && styles.freeValue]}>
+                                    {items.length === 0 ? '0 ₫' : (finalShippingFee === 0 ? "Miễn phí" : formatPrice(finalShippingFee))}
+                                </Text>
+                            </View>
                         </View>
+                        
+                        {/* Order Voucher Discount */}
+                        {voucherDiscount > 0 && (
+                            <View style={styles.priceRow}>
+                                <View style={styles.shippingLabel}>
+                                    <Text style={[styles.priceLabel, { color: '#10B981' }]}>Giảm giá đơn hàng</Text>
+                                    <View style={[styles.freeBadge, { backgroundColor: '#ECFDF5' }]}>
+                                        <Text style={[styles.freeText, { color: '#10B981' }]}>{appliedVoucherCode}</Text>
+                                    </View>
+                                </View>
+                                <Text style={[styles.priceValue, { color: '#10B981' }]}>
+                                    -{formatPrice(voucherDiscount)}
+                                </Text>
+                            </View>
+                        )}
+                        
+                        {/* Shipping Voucher Discount */}
+                        {shippingVoucherDiscount > 0 && (
+                            <View style={styles.priceRow}>
+                                <View style={styles.shippingLabel}>
+                                    <Text style={[styles.priceLabel, { color: '#EE4D2D' }]}>Giảm phí vận chuyển</Text>
+                                    <View style={[styles.freeBadge, { backgroundColor: '#FFF1ED' }]}>
+                                        <Text style={[styles.freeText, { color: '#EE4D2D' }]}>{appliedShippingVoucherCode}</Text>
+                                    </View>
+                                </View>
+                                <Text style={[styles.priceValue, { color: '#EE4D2D' }]}>
+                                    -{formatPrice(shippingVoucherDiscount)}
+                                </Text>
+                            </View>
+                        )}
+                        
                         <View style={styles.divider} />
                         <View style={styles.priceRow}>
                             <Text style={styles.totalLabel}>Tổng thanh toán</Text>
@@ -697,61 +601,169 @@ export default function CheckoutScreen() {
                     </View>
                 </View>
 
-                {/* Shipping Info Card */}
+                {/* Shipping Address Card - Shopee Style */}
+                <TouchableOpacity 
+                    style={[styles.card, styles.cardMargin, styles.addressCard]}
+                    onPress={() => setShowAddressSelector(true)}
+                    activeOpacity={0.7}
+                    disabled={isLoading}
+                >
+                    <View style={styles.addressCardContent}>
+                        {/* Location Icon */}
+                        <View style={styles.addressIconContainer}>
+                            <Ionicons name="location" size={20} color="#EE4D2D" />
+                        </View>
+
+                        {/* Address Info */}
+                        {selectedAddressId && address ? (
+                            <View style={styles.addressInfo}>
+                                <View style={styles.addressNameRow}>
+                                    <Text style={styles.addressName}>{fullName}</Text>
+                                    <Text style={styles.addressDivider}>|</Text>
+                                    <Text style={styles.addressPhone}>(+84) {phone?.replace(/^0/, "")}</Text>
+                                </View>
+                                <Text style={styles.addressText} numberOfLines={2}>
+                                    {address}
+                                </Text>
+                            </View>
+                        ) : address ? (
+                            <View style={styles.addressInfo}>
+                                <View style={styles.addressNameRow}>
+                                    <Text style={styles.addressName}>{fullName || "Người nhận"}</Text>
+                                    {phone && (
+                                        <>
+                                            <Text style={styles.addressDivider}>|</Text>
+                                            <Text style={styles.addressPhone}>(+84) {phone?.replace(/^0/, "")}</Text>
+                                        </>
+                                    )}
+                                </View>
+                                <Text style={styles.addressText} numberOfLines={2}>
+                                    {address}
+                                </Text>
+                            </View>
+                        ) : (
+                            <View style={styles.addressInfo}>
+                                <Text style={styles.noAddressText}>Chọn địa chỉ giao hàng</Text>
+                                <Text style={styles.noAddressHint}>Nhấn để chọn hoặc thêm địa chỉ mới</Text>
+                            </View>
+                        )}
+
+                        {/* Arrow */}
+                        <Ionicons name="chevron-forward" size={20} color="#94A3B8" />
+                    </View>
+                    
+                    {/* Quick Action Buttons */}
+                    <View style={styles.addressQuickActions}>
+                        <TouchableOpacity
+                            style={styles.quickActionBtn}
+                            onPress={(e) => {
+                                e.stopPropagation();
+                                setShowLocationPicker(true);
+                            }}
+                        >
+                            <Ionicons name="map-outline" size={16} color="#5B9EE1" />
+                            <Text style={styles.quickActionText}>Bản đồ</Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                            style={styles.quickActionBtn}
+                            onPress={(e) => {
+                                e.stopPropagation();
+                                setShowAddressSelector(true);
+                            }}
+                        >
+                            <Ionicons name="book-outline" size={16} color="#5B9EE1" />
+                            <Text style={styles.quickActionText}>Sổ địa chỉ</Text>
+                        </TouchableOpacity>
+                    </View>
+                </TouchableOpacity>
+
+                {/* Manual Entry Section (collapsed by default, expands if no saved address) */}
+                {!selectedAddressId && (
+                    <View style={[styles.card, styles.cardMargin]}>
+                        <View style={styles.cardHeader}>
+                            <Ionicons name="create-outline" size={18} color="#5B9EE1" />
+                            <Text style={styles.cardHeaderText}>Nhập địa chỉ thủ công</Text>
+                        </View>
+
+                        <View style={styles.inputGroup}>
+                            <Text style={styles.inputLabel}>Họ và tên người nhận *</Text>
+                            <View style={styles.inputWrapper}>
+                                <Ionicons name="person-outline" size={18} color="#94A3B8" />
+                                <TextInput
+                                    style={styles.input}
+                                    value={fullName}
+                                    onChangeText={setFullName}
+                                    placeholder="Nhập họ tên"
+                                    placeholderTextColor="#94A3B8"
+                                    editable={!isLoading}
+                                />
+                            </View>
+                        </View>
+
+                        <View style={styles.inputGroup}>
+                            <Text style={styles.inputLabel}>Số điện thoại *</Text>
+                            <View style={styles.inputWrapper}>
+                                <Ionicons name="call-outline" size={18} color="#94A3B8" />
+                                <TextInput
+                                    style={styles.input}
+                                    value={phone}
+                                    onChangeText={setPhone}
+                                    keyboardType="phone-pad"
+                                    placeholder="Nhập số điện thoại"
+                                    placeholderTextColor="#94A3B8"
+                                    editable={!isLoading}
+                                />
+                            </View>
+                        </View>
+
+                        <View style={styles.inputGroup}>
+                            <Text style={styles.inputLabel}>Địa chỉ giao hàng *</Text>
+                            <View style={[styles.inputWrapper, styles.inputWrapperMultiline]}>
+                                <Ionicons name="home-outline" size={18} color="#94A3B8" style={styles.inputIconTop} />
+                                <TextInput
+                                    style={[styles.input, styles.inputMultiline]}
+                                    value={address}
+                                    onChangeText={setAddress}
+                                    multiline
+                                    numberOfLines={3}
+                                    placeholder="Số nhà, đường, phường/xã, quận/huyện, tỉnh/thành phố"
+                                    placeholderTextColor="#94A3B8"
+                                    editable={!isLoading}
+                                />
+                            </View>
+                        </View>
+                    </View>
+                )}
+
+                {/* Location Picker Modal */}
+                <LocationPickerModal
+                    visible={showLocationPicker}
+                    onClose={() => setShowLocationPicker(false)}
+                    onSelectAddress={(addr) => {
+                        setAddress(addr);
+                        setShowLocationPicker(false);
+                        // Reset selected ID as this is a custom location
+                        setSelectedAddressId(null);
+                    }}
+                    initialAddress={address}
+                />
+                
+                {/* Address Selector Modal */}
+                <AddressSelectorModal
+                    visible={showAddressSelector}
+                    onClose={() => setShowAddressSelector(false)}
+                    addresses={savedAddresses}
+                    selectedAddressId={selectedAddressId}
+                    userId={user?.id}
+                    onSelect={(addr) => {
+                        fillAddress(addr);
+                        setShowAddressSelector(false);
+                    }}
+                    onAddressCreated={loadSavedAddresses}
+                />
+
+                {/* Note Card */}
                 <View style={[styles.card, styles.cardMargin]}>
-                    <View style={styles.cardHeader}>
-                        <Ionicons name="location-outline" size={18} color="#5B9EE1" />
-                        <Text style={styles.cardHeaderText}>Thông tin giao hàng</Text>
-                    </View>
-
-                    <View style={styles.inputGroup}>
-                        <Text style={styles.inputLabel}>Họ và tên người nhận *</Text>
-                        <View style={styles.inputWrapper}>
-                            <Ionicons name="person-outline" size={18} color="#94A3B8" />
-                            <TextInput
-                                style={styles.input}
-                                value={fullName}
-                                onChangeText={setFullName}
-                                placeholder="Nhập họ tên"
-                                placeholderTextColor="#94A3B8"
-                                editable={!isLoading}
-                            />
-                        </View>
-                    </View>
-
-                    <View style={styles.inputGroup}>
-                        <Text style={styles.inputLabel}>Số điện thoại *</Text>
-                        <View style={styles.inputWrapper}>
-                            <Ionicons name="call-outline" size={18} color="#94A3B8" />
-                            <TextInput
-                                style={styles.input}
-                                value={phone}
-                                onChangeText={setPhone}
-                                keyboardType="phone-pad"
-                                placeholder="Nhập số điện thoại"
-                                placeholderTextColor="#94A3B8"
-                                editable={!isLoading}
-                            />
-                        </View>
-                    </View>
-
-                    <View style={styles.inputGroup}>
-                        <Text style={styles.inputLabel}>Địa chỉ giao hàng *</Text>
-                        <View style={[styles.inputWrapper, styles.inputWrapperMultiline]}>
-                            <Ionicons name="home-outline" size={18} color="#94A3B8" style={styles.inputIconTop} />
-                            <TextInput
-                                style={[styles.input, styles.inputMultiline]}
-                                value={address}
-                                onChangeText={setAddress}
-                                multiline
-                                numberOfLines={3}
-                                placeholder="Số nhà, đường, phường/xã, quận/huyện, tỉnh/thành phố"
-                                placeholderTextColor="#94A3B8"
-                                editable={!isLoading}
-                            />
-                        </View>
-                    </View>
-
                     <View style={styles.inputGroup}>
                         <Text style={styles.inputLabel}>Ghi chú (tùy chọn)</Text>
                         <View style={[styles.inputWrapper, styles.inputWrapperMultiline]}>
@@ -770,6 +782,16 @@ export default function CheckoutScreen() {
                     </View>
                 </View>
 
+                {/* Dual Voucher Section - ORDER + SHIPPING */}
+                <View style={styles.cardMargin}>
+                    <DualVoucherSection
+                        orderAmount={subtotal}
+                        shippingFee={shippingFee}
+                        onOrderVoucherApplied={handleVoucherApplied}
+                        onShippingVoucherApplied={handleShippingVoucherApplied}
+                    />
+                </View>
+
                 {/* Payment Method Card */}
                 <View style={[styles.card, styles.cardMargin]}>
                     <View style={styles.cardHeader}>
@@ -783,7 +805,7 @@ export default function CheckoutScreen() {
                             style={[
                                 styles.paymentOption,
                                 paymentMethod === method.id && styles.paymentOptionActive,
-                                method.isMoMo && paymentMethod === method.id && styles.paymentOptionMoMo,
+                                method.isVNPay && paymentMethod === method.id && styles.paymentOptionVNPay,
                             ]}
                             onPress={() => setPaymentMethod(method.id)}
                             disabled={isLoading}
@@ -791,27 +813,19 @@ export default function CheckoutScreen() {
                             <View style={[
                                 styles.paymentIconWrapper,
                                 paymentMethod === method.id && styles.paymentIconWrapperActive,
-                                method.isMoMo && paymentMethod === method.id && styles.paymentIconWrapperMoMo,
+                                method.isVNPay && paymentMethod === method.id && styles.paymentIconWrapperVNPay,
                             ]}>
-                                {method.isMoMo ? (
-                                    <MaterialCommunityIcons
-                                        name="wallet"
-                                        size={22}
-                                        color={paymentMethod === method.id ? MOMO_PINK : "#64748B"}
-                                    />
-                                ) : (
-                                    <Ionicons
-                                        name={method.icon as any}
-                                        size={22}
-                                        color={paymentMethod === method.id ? "#5B9EE1" : "#64748B"}
-                                    />
-                                )}
+                                <Ionicons
+                                    name={method.icon as any}
+                                    size={22}
+                                    color={method.isVNPay && paymentMethod === method.id ? VNPAY_BLUE : (paymentMethod === method.id ? "#5B9EE1" : "#64748B")}
+                                />
                             </View>
                             <View style={styles.paymentInfo}>
                                 <Text style={[
                                     styles.paymentTitle,
                                     paymentMethod === method.id && styles.paymentTitleActive,
-                                    method.isMoMo && paymentMethod === method.id && styles.paymentTitleMoMo,
+                                    method.isVNPay && paymentMethod === method.id && styles.paymentTitleVNPay,
                                 ]}>
                                     {method.title}
                                 </Text>
@@ -820,58 +834,36 @@ export default function CheckoutScreen() {
                             <View style={[
                                 styles.radioOuter,
                                 paymentMethod === method.id && styles.radioOuterActive,
-                                method.isMoMo && paymentMethod === method.id && styles.radioOuterMoMo,
+                                method.isVNPay && paymentMethod === method.id && styles.radioOuterVNPay,
                             ]}>
                                 {paymentMethod === method.id && (
                                     <View style={[
                                         styles.radioInner,
-                                        method.isMoMo && styles.radioInnerMoMo,
+                                        method.isVNPay && styles.radioInnerVNPay,
                                     ]} />
                                 )}
                             </View>
                         </TouchableOpacity>
                     ))}
 
-                    {/* MoMo Payment Type Selection */}
-                    {paymentMethod === 'momo' && (
-                        <View style={styles.momoTypeSelection}>
-                            <Text style={styles.momoTypeLabel}>Chọn hình thức thanh toán MoMo:</Text>
-                            <View style={styles.momoTypeOptions}>
-                                <TouchableOpacity
-                                    style={[styles.momoTypeBtn, momoType === 'QR' && styles.momoTypeBtnActive]}
-                                    onPress={() => setMoMoType('QR')}
-                                >
-                                    <Ionicons
-                                        name="qr-code-outline"
-                                        size={24}
-                                        color={momoType === 'QR' ? MOMO_PINK : '#64748B'}
-                                    />
-                                    <Text style={[styles.momoTypeBtnText, momoType === 'QR' && styles.momoTypeBtnTextActive]}>
-                                        Quét mã QR
-                                    </Text>
-                                </TouchableOpacity>
-                                <TouchableOpacity
-                                    style={[styles.momoTypeBtn, momoType === 'CARD' && styles.momoTypeBtnActive]}
-                                    onPress={() => setMoMoType('CARD')}
-                                >
-                                    <Ionicons
-                                        name="card-outline"
-                                        size={24}
-                                        color={momoType === 'CARD' ? MOMO_PINK : '#64748B'}
-                                    />
-                                    <Text style={[styles.momoTypeBtnText, momoType === 'CARD' && styles.momoTypeBtnTextActive]}>
-                                        Thẻ ngân hàng
-                                    </Text>
-                                </TouchableOpacity>
-                            </View>
+                    {/* VNPay Info Message */}
+                    {paymentMethod === 'vnpay' && (
+                        <View style={styles.vnpayInfoBox}>
+                            <MaterialCommunityIcons name="information-outline" size={18} color={VNPAY_BLUE} />
+                            <Text style={styles.vnpayInfoText}>
+                                {isWeb() 
+                                    ? "Bạn sẽ được chuyển hướng đến trang VNPay trên trình duyệt. Sau khi thanh toán, vui lòng quay lại ứng dụng."
+                                    : "Bạn sẽ được chuyển đến trang VNPay để hoàn tất thanh toán. Hỗ trợ thẻ ATM nội địa, Visa, MasterCard, JCB."
+                                }
+                            </Text>
                         </View>
                     )}
                 </View>
 
                 {/* Security Note */}
-                <View style={styles.securityNote}>
+                <View style={styles.securityNoteContainer}>
                     <MaterialCommunityIcons name="shield-check" size={18} color="#10B981" />
-                    <Text style={styles.securityNoteText}>
+                    <Text style={styles.securityNoteBottomText}>
                         Thông tin của bạn được bảo mật và mã hóa an toàn
                     </Text>
                 </View>
@@ -887,7 +879,7 @@ export default function CheckoutScreen() {
                 <TouchableOpacity
                     style={[
                         styles.payButton,
-                        paymentMethod === 'momo' && styles.payButtonMoMo,
+                        paymentMethod === 'vnpay' && styles.payButtonVNPay,
                         (items.length === 0 || isLoading) && styles.payButtonDisabled,
                     ]}
                     disabled={items.length === 0 || isLoading}
@@ -899,15 +891,12 @@ export default function CheckoutScreen() {
                         <>
                             <Ionicons name="checkmark-circle" size={20} color="#FFFFFF" />
                             <Text style={styles.payText}>
-                                {paymentMethod === 'momo' ? 'Thanh toán MoMo' : 'Đặt hàng'}
+                                {paymentMethod === 'vnpay' ? 'Thanh toán VNPay' : 'Đặt hàng'}
                             </Text>
                         </>
                     )}
                 </TouchableOpacity>
             </View>
-
-            {/* MoMo Payment Modal */}
-            {renderMoMoModal()}
         </KeyboardAvoidingView>
     );
 }
@@ -946,6 +935,7 @@ const styles = StyleSheet.create({
         ...Platform.select({
             ios: { shadowColor: "#000", shadowOpacity: 0.06, shadowRadius: 8, shadowOffset: { width: 0, height: 2 } },
             android: { elevation: 2 },
+            web: { boxShadow: '0 2px 8px rgba(0,0,0,0.06)' },
         }),
     },
     headerTitle: {
@@ -975,6 +965,7 @@ const styles = StyleSheet.create({
         ...Platform.select({
             ios: { shadowColor: "#5B9EE1", shadowOpacity: 0.08, shadowRadius: 12, shadowOffset: { width: 0, height: 4 } },
             android: { elevation: 3 },
+            web: { boxShadow: '0 4px 12px rgba(91,158,225,0.08)' },
         }),
     },
     cardMargin: { marginTop: 16 },
@@ -1089,6 +1080,28 @@ const styles = StyleSheet.create({
     input: { flex: 1, fontSize: 14, color: "#0F172A" },
     inputMultiline: { height: 60, textAlignVertical: "top" },
 
+    // Address Label Row (with map button)
+    addressLabelRow: {
+        flexDirection: "row",
+        alignItems: "center",
+        justifyContent: "space-between",
+        marginBottom: 8,
+    },
+    mapButton: {
+        flexDirection: "row",
+        alignItems: "center",
+        backgroundColor: "#EBF4FF",
+        paddingHorizontal: 10,
+        paddingVertical: 6,
+        borderRadius: 8,
+        gap: 4,
+    },
+    mapButtonText: {
+        fontSize: 12,
+        fontWeight: "600",
+        color: "#5B9EE1",
+    },
+
     // Payment Options
     paymentOption: {
         flexDirection: "row",
@@ -1103,9 +1116,9 @@ const styles = StyleSheet.create({
         borderColor: "#5B9EE1",
         backgroundColor: "#EBF4FF",
     },
-    paymentOptionMoMo: {
-        borderColor: MOMO_PINK,
-        backgroundColor: MOMO_LIGHT_PINK,
+    paymentOptionVNPay: {
+        borderColor: VNPAY_BLUE,
+        backgroundColor: VNPAY_LIGHT_BLUE,
     },
     paymentIconWrapper: {
         width: 44,
@@ -1117,7 +1130,7 @@ const styles = StyleSheet.create({
         marginRight: 12,
     },
     paymentIconWrapperActive: { backgroundColor: "#DBEAFE" },
-    paymentIconWrapperMoMo: { backgroundColor: '#FFE4EC' },
+    paymentIconWrapperVNPay: { backgroundColor: '#CCE0FF' },
     paymentInfo: { flex: 1 },
     paymentTitle: {
         fontSize: 14,
@@ -1126,7 +1139,7 @@ const styles = StyleSheet.create({
         marginBottom: 2,
     },
     paymentTitleActive: { color: "#5B9EE1" },
-    paymentTitleMoMo: { color: MOMO_PINK },
+    paymentTitleVNPay: { color: VNPAY_BLUE },
     paymentDesc: { fontSize: 12, color: "#94A3B8" },
     radioOuter: {
         width: 22,
@@ -1138,67 +1151,41 @@ const styles = StyleSheet.create({
         justifyContent: "center",
     },
     radioOuterActive: { borderColor: "#5B9EE1" },
-    radioOuterMoMo: { borderColor: MOMO_PINK },
+    radioOuterVNPay: { borderColor: VNPAY_BLUE },
     radioInner: {
         width: 12,
         height: 12,
         borderRadius: 6,
         backgroundColor: "#5B9EE1",
     },
-    radioInnerMoMo: { backgroundColor: MOMO_PINK },
+    radioInnerVNPay: { backgroundColor: VNPAY_BLUE },
 
-    // MoMo Type Selection
-    momoTypeSelection: {
-        backgroundColor: MOMO_LIGHT_PINK,
-        borderRadius: 12,
-        padding: 12,
-        marginTop: 8,
-    },
-    momoTypeLabel: {
-        fontSize: 13,
-        fontWeight: "600",
-        color: MOMO_PINK,
-        marginBottom: 10,
-    },
-    momoTypeOptions: {
-        flexDirection: "row",
-        gap: 10,
-    },
-    momoTypeBtn: {
-        flex: 1,
+    // VNPay Info Box
+    vnpayInfoBox: {
         flexDirection: "row",
         alignItems: "center",
-        justifyContent: "center",
-        paddingVertical: 12,
-        borderRadius: 10,
-        backgroundColor: "#fff",
-        borderWidth: 1,
-        borderColor: "#E2E8F0",
-        gap: 8,
+        backgroundColor: VNPAY_LIGHT_BLUE,
+        borderRadius: 12,
+        padding: 14,
+        marginTop: 12,
+        gap: 10,
     },
-    momoTypeBtnActive: {
-        borderColor: MOMO_PINK,
-        backgroundColor: '#fff',
-    },
-    momoTypeBtnText: {
+    vnpayInfoText: {
+        flex: 1,
         fontSize: 13,
-        fontWeight: "500",
-        color: "#64748B",
-    },
-    momoTypeBtnTextActive: {
-        color: MOMO_PINK,
-        fontWeight: "600",
+        color: VNPAY_BLUE,
+        lineHeight: 18,
     },
 
     // Security Note
-    securityNote: {
+    securityNoteContainer: {
         flexDirection: "row",
         alignItems: "center",
         justifyContent: "center",
         marginTop: 20,
         gap: 8,
     },
-    securityNoteText: { fontSize: 12, color: "#64748B" },
+    securityNoteBottomText: { fontSize: 12, color: "#64748B" },
 
     // Bottom Bar
     bottomBar: {
@@ -1213,6 +1200,7 @@ const styles = StyleSheet.create({
         ...Platform.select({
             ios: { shadowColor: "#000", shadowOpacity: 0.08, shadowRadius: 12, shadowOffset: { width: 0, height: -4 } },
             android: { elevation: 8 },
+            web: { boxShadow: '0 -4px 12px rgba(0,0,0,0.08)' },
         }),
     },
     bottomTotal: { flex: 1 },
@@ -1230,294 +1218,86 @@ const styles = StyleSheet.create({
         ...Platform.select({
             ios: { shadowColor: "#5B9EE1", shadowOpacity: 0.35, shadowRadius: 10, shadowOffset: { width: 0, height: 4 } },
             android: { elevation: 5 },
+            web: { boxShadow: '0 4px 10px rgba(91,158,225,0.35)' },
         }),
     },
-    payButtonMoMo: {
-        backgroundColor: MOMO_PINK,
+    payButtonVNPay: {
+        backgroundColor: VNPAY_BLUE,
         ...Platform.select({
-            ios: { shadowColor: MOMO_PINK },
+            ios: { shadowColor: VNPAY_BLUE },
+            web: { boxShadow: '0 4px 10px rgba(0,102,204,0.35)' },
         }),
     },
     payButtonDisabled: { backgroundColor: "#A0C4E8" },
     payText: { fontSize: 16, fontWeight: "700", color: "#FFFFFF" },
 
-    // Modal Styles
-    modalOverlay: {
-        flex: 1,
-        backgroundColor: 'rgba(0, 0, 0, 0.5)',
-        justifyContent: 'flex-end',
+    // Address Card - Shopee Style
+    addressCard: {
+        padding: 0,
+        overflow: "hidden",
     },
-    modalContainer: {
-        backgroundColor: '#fff',
-        borderTopLeftRadius: 24,
-        borderTopRightRadius: 24,
-        maxHeight: SCREEN_HEIGHT * 0.85,
+    addressCardContent: {
+        flexDirection: "row",
+        alignItems: "flex-start",
+        padding: 16,
+        gap: 12,
     },
-    modalHeader: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        paddingHorizontal: 20,
-        paddingTop: 20,
-        paddingBottom: 16,
-        borderBottomWidth: 1,
-        borderBottomColor: '#F1F5F9',
-    },
-    modalHeaderLeft: {
-        flexDirection: 'row',
-        alignItems: 'center',
-    },
-    momoIconContainer: {
-        width: 48,
-        height: 48,
-        borderRadius: 12,
-        backgroundColor: MOMO_LIGHT_PINK,
-        alignItems: 'center',
-        justifyContent: 'center',
-        marginRight: 12,
-    },
-    modalHeaderTitle: {
-        fontSize: 16,
-        fontWeight: '600',
-        color: '#0F172A',
-    },
-    modalHeaderAmount: {
-        fontSize: 20,
-        fontWeight: '700',
-        color: MOMO_PINK,
+    addressIconContainer: {
         marginTop: 2,
     },
-    modalCloseBtn: {
-        width: 36,
-        height: 36,
-        borderRadius: 18,
-        backgroundColor: '#F1F5F9',
-        alignItems: 'center',
-        justifyContent: 'center',
-    },
-    momoTabs: {
-        flexDirection: 'row',
-        paddingHorizontal: 20,
-        paddingVertical: 12,
-        gap: 12,
-    },
-    momoTab: {
+    addressInfo: {
         flex: 1,
-        flexDirection: 'row',
-        alignItems: 'center',
-        justifyContent: 'center',
-        paddingVertical: 12,
-        borderRadius: 12,
-        backgroundColor: '#F8FAFC',
-        gap: 8,
     },
-    momoTabActive: {
-        backgroundColor: MOMO_LIGHT_PINK,
-        borderWidth: 1,
-        borderColor: MOMO_PINK,
+    addressNameRow: {
+        flexDirection: "row",
+        alignItems: "center",
+        marginBottom: 4,
+        flexWrap: "wrap",
     },
-    momoTabText: {
+    addressName: {
+        fontSize: 15,
+        fontWeight: "600",
+        color: "#0F172A",
+    },
+    addressDivider: {
+        marginHorizontal: 8,
+        color: "#CBD5E1",
+    },
+    addressPhone: {
         fontSize: 14,
-        fontWeight: '500',
-        color: '#666',
+        color: "#64748B",
     },
-    momoTabTextActive: {
-        color: MOMO_PINK,
-        fontWeight: '600',
-    },
-    modalContent: {
-        paddingHorizontal: 20,
-        maxHeight: SCREEN_HEIGHT * 0.5,
-    },
-    modalFooter: {
-        paddingHorizontal: 20,
-        paddingVertical: 16,
-        paddingBottom: Platform.OS === 'ios' ? 34 : 16,
-        borderTopWidth: 1,
-        borderTopColor: '#F1F5F9',
-        alignItems: 'center',
-    },
-
-    // QR Container
-    qrContainer: {
-        alignItems: 'center',
-        paddingVertical: 16,
-    },
-    qrTitle: {
-        fontSize: 16,
-        fontWeight: '600',
-        color: '#0F172A',
-        marginBottom: 20,
-    },
-    qrCodeWrapper: {
-        marginBottom: 16,
-    },
-    qrCodeBorder: {
-        padding: 16,
-        backgroundColor: '#fff',
-        borderRadius: 16,
-        borderWidth: 2,
-        borderColor: MOMO_PINK,
-        ...Platform.select({
-            ios: { shadowColor: MOMO_PINK, shadowOpacity: 0.2, shadowRadius: 12, shadowOffset: { width: 0, height: 4 } },
-            android: { elevation: 4 },
-        }),
-    },
-    qrLoading: {
-        width: 180,
-        height: 180,
-        alignItems: 'center',
-        justifyContent: 'center',
-        backgroundColor: '#F8FAFC',
-        borderRadius: 16,
-    },
-    qrLoadingText: {
-        marginTop: 12,
-        fontSize: 14,
-        color: '#666',
-    },
-    countdownContainer: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        marginBottom: 20,
-        gap: 6,
-    },
-    countdownText: {
-        fontSize: 14,
-        color: '#666',
-    },
-    instructionsBox: {
-        width: '100%',
-        backgroundColor: '#F8FAFC',
-        borderRadius: 12,
-        padding: 16,
-    },
-    instructionsTitle: {
-        fontSize: 14,
-        fontWeight: '600',
-        color: '#0F172A',
-        marginBottom: 12,
-    },
-    instructionStep: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        marginBottom: 10,
-        gap: 12,
-    },
-    stepBadge: {
-        width: 24,
-        height: 24,
-        borderRadius: 12,
-        backgroundColor: MOMO_PINK,
-        alignItems: 'center',
-        justifyContent: 'center',
-    },
-    stepNum: {
-        fontSize: 12,
-        fontWeight: '700',
-        color: '#fff',
-    },
-    modalStepText: {
-        flex: 1,
+    addressText: {
         fontSize: 13,
-        color: '#64748B',
+        color: "#475569",
         lineHeight: 18,
     },
-
-    // Card Container
-    cardContainer: {
-        alignItems: 'center',
-        paddingVertical: 20,
+    noAddressText: {
+        fontSize: 15,
+        fontWeight: "500",
+        color: "#EE4D2D",
     },
-    cardTitle: {
-        fontSize: 18,
-        fontWeight: '600',
-        color: '#0F172A',
-        marginTop: 12,
-        marginBottom: 8,
+    noAddressHint: {
+        fontSize: 13,
+        color: "#94A3B8",
+        marginTop: 2,
     },
-    cardDesc: {
-        fontSize: 14,
-        color: '#64748B',
-        textAlign: 'center',
-        marginBottom: 20,
-        paddingHorizontal: 20,
-        lineHeight: 20,
+    addressQuickActions: {
+        flexDirection: "row",
+        borderTopWidth: 1,
+        borderTopColor: "#F1F5F9",
     },
-    cardLogos: {
-        flexDirection: 'row',
-        justifyContent: 'center',
-        gap: 32,
-        marginBottom: 24,
-    },
-    cardLogoItem: {
-        alignItems: 'center',
-        gap: 6,
-    },
-    cardLogoLabel: {
-        fontSize: 12,
-        color: '#666',
-    },
-    openPaymentBtn: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        justifyContent: 'center',
-        backgroundColor: MOMO_PINK,
-        paddingVertical: 16,
-        paddingHorizontal: 32,
-        borderRadius: 12,
-        gap: 8,
-        width: '100%',
-    },
-    openPaymentText: {
-        fontSize: 16,
-        fontWeight: '600',
-        color: '#fff',
-    },
-    openPaymentBtnDisabled: {
-        backgroundColor: '#D1B3C4',
-        opacity: 0.7,
-    },
-    cardNote: {
-        marginTop: 12,
-        fontSize: 12,
-        color: '#94A3B8',
-        textAlign: 'center',
-    },
-
-    // Footer buttons
-    checkStatusBtn: {
-        flexDirection: 'row',
-        alignItems: 'center',
+    quickActionBtn: {
+        flex: 1,
+        flexDirection: "row",
+        alignItems: "center",
+        justifyContent: "center",
         paddingVertical: 12,
-        paddingHorizontal: 24,
-        borderRadius: 10,
-        borderWidth: 1,
-        borderColor: MOMO_PINK,
-        gap: 8,
-        marginBottom: 12,
-    },
-    checkStatusText: {
-        fontSize: 14,
-        fontWeight: '500',
-        color: MOMO_PINK,
-    },
-    simulateBtn: {
-        paddingVertical: 8,
-        paddingHorizontal: 16,
-        marginBottom: 12,
-    },
-    simulateBtnText: {
-        fontSize: 12,
-        color: '#94A3B8',
-    },
-    securityBadge: {
-        flexDirection: 'row',
-        alignItems: 'center',
         gap: 6,
     },
-    securityText: {
-        fontSize: 12,
-        color: '#64748B',
+    quickActionText: {
+        fontSize: 13,
+        fontWeight: "500",
+        color: "#5B9EE1",
     },
 });

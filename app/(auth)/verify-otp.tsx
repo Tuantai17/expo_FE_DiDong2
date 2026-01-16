@@ -1,11 +1,12 @@
 import { Ionicons } from '@expo/vector-icons';
-import { useRouter, useLocalSearchParams } from 'expo-router';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
-import { useEffect, useState, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
     Alert,
     Dimensions,
     KeyboardAvoidingView,
+    Modal,
     Platform,
     ScaledSize,
     ScrollView,
@@ -14,7 +15,6 @@ import {
     TextInput,
     TouchableOpacity,
     View,
-    Modal,
 } from 'react-native';
 import { ENDPOINTS } from '../../config/api.config';
 
@@ -23,13 +23,14 @@ export default function VerifyOtpScreen(): React.JSX.Element {
     const params = useLocalSearchParams();
     const email = params.email as string;
 
-    const [otp, setOtp] = useState<string[]>(['', '', '', '', '', '']);
+    // State cho OTP - lưu trữ chuỗi 6 số
+    const [otpValue, setOtpValue] = useState<string>('');
+    const hiddenInputRef = useRef<TextInput | null>(null);
+    
     const [isLoading, setIsLoading] = useState<boolean>(false);
     const [countdown, setCountdown] = useState<number>(300); // 5 phút
     const [dimensions, setDimensions] = useState<ScaledSize>(Dimensions.get('window'));
     const [showSuccessModal, setShowSuccessModal] = useState(false);
-
-    const inputRefs = useRef<(TextInput | null)[]>([]);
 
     useEffect(() => {
         const subscription = Dimensions.addEventListener('change', ({ window }: { window: ScaledSize }) => {
@@ -52,31 +53,24 @@ export default function VerifyOtpScreen(): React.JSX.Element {
         return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
     };
 
-    const handleOtpChange = (value: string, index: number) => {
-        if (value.length > 1) {
-            value = value[value.length - 1];
-        }
-
-        const newOtp = [...otp];
-        newOtp[index] = value;
-        setOtp(newOtp);
-
-        // Tự động chuyển sang ô tiếp theo
-        if (value && index < 5) {
-            inputRefs.current[index + 1]?.focus();
-        }
+    const handleOtpInputChange = (value: string) => {
+        // Chỉ cho phép số và tối đa 6 ký tự
+        const numericValue = value.replace(/[^0-9]/g, '').slice(0, 6);
+        setOtpValue(numericValue);
     };
 
-    const handleKeyPress = (e: any, index: number) => {
-        if (e.nativeEvent.key === 'Backspace' && !otp[index] && index > 0) {
-            inputRefs.current[index - 1]?.focus();
-        }
+    const handleBoxPress = () => {
+        // Focus vào hidden input khi nhấn vào các ô
+        hiddenInputRef.current?.focus();
+    };
+
+    // Chuyển đổi otpValue thành mảng để hiển thị
+    const getDigitAtIndex = (index: number): string => {
+        return otpValue[index] || '';
     };
 
     const handleVerify = async (): Promise<void> => {
-        const otpString = otp.join('');
-
-        if (otpString.length !== 6) {
+        if (otpValue.length !== 6) {
             Alert.alert('Lỗi', 'Vui lòng nhập đủ 6 số OTP');
             return;
         }
@@ -91,7 +85,7 @@ export default function VerifyOtpScreen(): React.JSX.Element {
                 },
                 body: JSON.stringify({
                     email: email,
-                    otp: otpString,
+                    otp: otpValue,
                 }),
             });
 
@@ -128,7 +122,7 @@ export default function VerifyOtpScreen(): React.JSX.Element {
 
             if (data.success) {
                 setCountdown(300);
-                setOtp(['', '', '', '', '', '']);
+                setOtpValue('');
                 Alert.alert('Thành công', 'Mã OTP mới đã được gửi đến email của bạn');
             } else {
                 Alert.alert('Lỗi', data.message);
@@ -144,7 +138,7 @@ export default function VerifyOtpScreen(): React.JSX.Element {
         setShowSuccessModal(false);
         router.push({
             pathname: '/(auth)/reset-password',
-            params: { email, otp: otp.join('') }
+            params: { email, otp: otpValue }
         });
     };
 
@@ -183,25 +177,57 @@ export default function VerifyOtpScreen(): React.JSX.Element {
                     </Text>
                 </View>
 
-                {/* OTP Input */}
+                {/* OTP Input - Hidden Input + Display Boxes */}
                 <View style={styles.otpContainer}>
-                    {otp.map((digit, index) => (
-                        <TextInput
-                            key={index}
-                            ref={(ref) => { inputRefs.current[index] = ref; }}
-                            style={[
-                                styles.otpInput,
-                                { fontSize: width * 0.06 },
-                                digit ? styles.otpInputFilled : {}
-                            ]}
-                            value={digit}
-                            onChangeText={(value) => handleOtpChange(value, index)}
-                            onKeyPress={(e) => handleKeyPress(e, index)}
-                            keyboardType="number-pad"
-                            maxLength={1}
-                            editable={!isLoading}
-                        />
-                    ))}
+                    {/* Input ẩn để hứng sự kiện bàn phím */}
+                    <TextInput
+                        ref={hiddenInputRef}
+                        style={styles.hiddenInput}
+                        value={otpValue}
+                        onChangeText={handleOtpInputChange}
+                        keyboardType="number-pad"
+                        maxLength={6}
+                        autoFocus={true}
+                        caretHidden={true}
+                        contextMenuHidden={true}
+                        selectTextOnFocus={false}
+                        editable={!isLoading}
+                        autoComplete="one-time-code"
+                        textContentType="oneTimeCode"
+                    />
+
+                    {/* Các ô hiển thị số */}
+                    <View style={styles.otpBoxesContainer}>
+                        {Array(6).fill(0).map((_, index) => {
+                            const digit = getDigitAtIndex(index);
+                            const isFocused = index === otpValue.length;
+                            const isFilled = digit !== '';
+                            
+                            return (
+                                <TouchableOpacity
+                                    key={index}
+                                    style={[
+                                        styles.otpBox,
+                                        isFilled ? styles.otpBoxFilled : {},
+                                        isFocused ? styles.otpBoxFocused : {}
+                                    ]}
+                                    onPress={handleBoxPress}
+                                    activeOpacity={1}
+                                >
+                                    <Text style={[
+                                        styles.otpText,
+                                        { fontSize: width * 0.06 }
+                                    ]}>
+                                        {digit}
+                                    </Text>
+                                    {/* Cursor giả lập nếu cần */}
+                                    {isFocused && (
+                                        <View style={styles.fakeCursor} />
+                                    )}
+                                </TouchableOpacity>
+                            );
+                        })}
+                    </View>
                 </View>
 
                 {/* Countdown */}
@@ -304,24 +330,48 @@ const styles = StyleSheet.create({
         fontWeight: '600',
     },
     otpContainer: {
-        flexDirection: 'row',
-        justifyContent: 'space-between',
         marginBottom: 30,
     },
-    otpInput: {
+    hiddenInput: {
+        position: 'absolute',
+        width: 1,
+        height: 1,
+        opacity: 0,
+    },
+    otpBoxesContainer: {
+        flexDirection: 'row',
+        justifyContent: 'space-between',
+        width: '100%',
+    },
+    otpBox: {
         width: 50,
         height: 55,
         borderWidth: 1,
         borderColor: '#E8EAED',
         borderRadius: 12,
-        textAlign: 'center',
+        alignItems: 'center',
+        justifyContent: 'center',
         backgroundColor: '#F7F8FA',
+    },
+    otpBoxFilled: {
+        backgroundColor: '#EBF5FF',
+        borderColor: '#5B9EE1',
+    },
+    otpBoxFocused: {
+        borderColor: '#5B9EE1',
+        backgroundColor: '#FFFFFF',
+        borderWidth: 2,
+    },
+    otpText: {
         color: '#1A2530',
         fontWeight: 'bold',
     },
-    otpInputFilled: {
-        borderColor: '#5B9EE1',
-        backgroundColor: '#EBF5FF',
+    fakeCursor: {
+        position: 'absolute',
+        width: 2,
+        height: 24,
+        backgroundColor: '#5B9EE1',
+        borderRadius: 1,
     },
     countdownContainer: {
         alignItems: 'center',
@@ -377,7 +427,6 @@ const styles = StyleSheet.create({
     resendLinkDisabled: {
         color: '#B0B0B0',
     },
-    // Modal styles
     modalOverlay: {
         flex: 1,
         backgroundColor: 'rgba(0, 0, 0, 0.5)',

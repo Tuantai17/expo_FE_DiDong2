@@ -2,11 +2,13 @@
 import React, { useState } from "react";
 import { RefreshControl, ScrollView, StyleSheet, View } from "react-native";
 
+import FloatingChatButton from "../../components/chat/FloatingChatButton";
+import BannerCarouselApi from "../../components/home/BannerCarouselApi";
 import CategoryTabs from "../../components/home/CategoryTabs";
-import HomeBanner from "../../components/home/HomeBanner";
+import HomeBestSellerSection from "../../components/home/HomeBestSellerSection";
+import HomeFlashSaleSection from "../../components/home/HomeFlashSaleSection";
 import HomeHeader from "../../components/home/HomeHeader";
-import HomeNewArrivalSection from "../../components/home/HomeNewArrivalSection";
-import HomePopularSection from "../../components/home/HomePopularSection";
+import MiniGameBanner from "../../components/home/MiniGameBanner";
 import DrawerMenu from "../../components/ui/DrawerMenu";
 import SearchBar from "../../components/ui/SearchBar";
 
@@ -25,7 +27,7 @@ export default function HomeScreen() {
   return (
     <View style={styles.container}>
       {/* Header with menu button */}
-      <HomeHeader onMenuPress={() => setDrawerVisible(true)} />
+      <HomeHeader />
 
       {/* Main scrollable content */}
       <ScrollView
@@ -43,21 +45,27 @@ export default function HomeScreen() {
         {/* Search Bar */}
         <SearchBar />
 
-        {/* Hero Banner */}
-        <HomeBanner />
+        {/* Banner Carousel from API */}
+        <BannerCarouselApi />
+
+        {/* 🎰 Mini Game Vòng Quay Voucher */}
+        <MiniGameBanner />
 
         {/* Category Tabs */}
         <CategoryTabs />
 
-        {/* Popular / Best Sellers */}
-        <HomePopularSection />
+        {/* Flash Sale Section */}
+        <HomeFlashSaleSection />
 
         {/* Featured Products */}
-        {/* <HomePopularSection /> */}
+        {/* <HomeFlashSaleSection /> */}
 
-        {/* New Arrivals */}
-        <HomeNewArrivalSection />
+        {/* Best Sellers */}
+        <HomeBestSellerSection />
       </ScrollView>
+
+      {/* Floating Chat Button */}
+      <FloatingChatButton />
 
       {/* Drawer Menu - slides from left with overlay */}
       <DrawerMenu

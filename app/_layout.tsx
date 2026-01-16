@@ -2,6 +2,7 @@
 import { Stack } from "expo-router";
 import React from "react";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
+import { ToastProvider } from "../components/ui/Toast";
 import { AuthProvider } from "../context/AuthContext";
 import { CartProvider } from "../context/CartContext";
 import { FavoriteProvider } from "../context/FavoriteContext";
@@ -14,21 +15,23 @@ export default function RootLayout() {
         <FavoriteProvider>
           <CartProvider>
             <OrderProvider>
-              <Stack screenOptions={{ headerShown: false }}>
-                {/* màn khởi động / redirect */}
-                <Stack.Screen name="index" />
+              <ToastProvider>
+                <Stack screenOptions={{ headerShown: false }}>
+                  {/* màn khởi động / redirect */}
+                  <Stack.Screen name="index" />
 
-                {/* Onboarding */}
-                <Stack.Screen name="onboarding/onboarding1" />
-                <Stack.Screen name="onboarding/onboarding2" />
-                <Stack.Screen name="onboarding/onboarding3" />
+                  {/* Onboarding */}
+                  <Stack.Screen name="onboarding/onboarding1" />
+                  <Stack.Screen name="onboarding/onboarding2" />
+                  <Stack.Screen name="onboarding/onboarding3" />
 
-                {/* Auth screens */}
-                <Stack.Screen name="(auth)" />
+                  {/* Auth screens */}
+                  <Stack.Screen name="(auth)" />
 
-                {/* Nhóm màn main dùng tabs */}
-                <Stack.Screen name="(main)" />
-              </Stack>
+                  {/* Nhóm màn main dùng tabs */}
+                  <Stack.Screen name="(main)" />
+                </Stack>
+              </ToastProvider>
             </OrderProvider>
           </CartProvider>
         </FavoriteProvider>

@@ -3,12 +3,14 @@
  * =====================
  * Displays order confirmation with real data from checkout
  * Shows animated success icon, order summary, and navigation options
+ * Updated for VNPay integration
  */
 
 import { Ionicons } from "@expo/vector-icons";
 import { useLocalSearchParams, useRouter } from "expo-router";
-import React, { useEffect, useRef } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import {
+    ActivityIndicator,
     Animated,
     Platform,
     StyleSheet,
@@ -16,22 +18,26 @@ import {
     TouchableOpacity,
     View,
 } from "react-native";
+import { SuccessLottie } from "../../components/ui/SuccessLottie";
+import { useCart } from "../../context/CartContext";
+import { checkVNPayPaymentStatus, confirmVNPayPayment } from "../../services/vnpayService";
 
 // =================== TYPES =====================
 
-type PaymentMethodType = "cod" | "card" | "momo" | "vnpay";
+type PaymentMethodType = "cod" | "vnpay" | "banking";
 
 // =================== COMPONENT =====================
 
 export default function OrderSuccessScreen() {
     const router = useRouter();
+    const { clearCart, refreshCart } = useCart();
     const params = useLocalSearchParams<{
         total?: string;
         name?: string;
         itemCount?: string;
         orderId?: string;
         paymentMethod?: string;
-        status?: string; // 'success' when redirected from MoMo
+        status?: string; // 'success' when redirected from VNPay
     }>();
 
     // Parse params with defaults
@@ -40,7 +46,18 @@ export default function OrderSuccessScreen() {
     const itemCount = Number(params.itemCount) || 0;
     const orderId = params.orderId || `ORD${String(Date.now()).slice(-6)}`;
     const paymentMethod = (params.paymentMethod as PaymentMethodType) || "cod";
-    const isFromMoMo = params.status === "success" && paymentMethod === "momo";
+    const isFromVNPay = params.status === "success" && paymentMethod === "vnpay";
+
+    // State for VNPay confirmation
+    const [isConfirming, setIsConfirming] = useState(false);
+    const [confirmError, setConfirmError] = useState<string | null>(null);
+    const [isConfirmed, setIsConfirmed] = useState(false);
+    const [cartCleared, setCartCleared] = useState(false);
+    const [paymentInfo, setPaymentInfo] = useState<{
+        status: string;
+        transactionId?: string;
+        paidAt?: string;
+    } | null>(null);
 
     // Animation refs
     const scaleAnim = useRef(new Animated.Value(0)).current;
@@ -56,15 +73,107 @@ export default function OrderSuccessScreen() {
     const getPaymentMethodLabel = (method: PaymentMethodType) => {
         const methods: Record<PaymentMethodType, string> = {
             cod: "Thanh toán khi nhận hàng",
-            card: "Thẻ tín dụng / Ghi nợ",
-            momo: "Ví MoMo",
             vnpay: "VNPay",
+            banking: "Chuyển khoản ngân hàng",
         };
         return methods[method] || "Thanh toán khi nhận hàng";
     };
 
     // =================== EFFECTS =====================
 
+    // Clear and refresh cart when order success page loads
+    useEffect(() => {
+        const clearCartAfterOrder = async () => {
+            // Only run once when orderId is present and cart hasn't been cleared yet
+            if (cartCleared || !orderId) {
+                return;
+            }
+
+            try {
+                console.log('🛒 [OrderSuccess] Clearing and refreshing cart after successful order');
+                console.log('   Order ID:', orderId);
+
+                // Clear local cart and sync with backend
+                await clearCart();
+                console.log('✅ [OrderSuccess] clearCart() completed');
+
+                // Small delay before refresh to ensure backend has processed
+                await new Promise(resolve => setTimeout(resolve, 300));
+
+                // Refresh to get latest state from backend (which should now be empty)
+                await refreshCart();
+                console.log('✅ [OrderSuccess] refreshCart() completed');
+
+                setCartCleared(true);
+                console.log('✅ [OrderSuccess] Cart cleared and refreshed successfully');
+            } catch (error) {
+                console.error('❌ [OrderSuccess] Error clearing cart:', error);
+                // Mark as cleared anyway to prevent retry loop
+                setCartCleared(true);
+
+                // Try refresh to sync with backend
+                try {
+                    await refreshCart();
+                } catch (refreshError) {
+                    console.error('❌ [OrderSuccess] Error refreshing cart:', refreshError);
+                }
+            }
+        };
+
+        clearCartAfterOrder();
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [orderId]); // Only depend on orderId, not on functions to prevent infinite loops
+
+    // Confirm VNPay payment when redirected from VNPay
+    useEffect(() => {
+        const confirmPayment = async () => {
+            if (isFromVNPay && orderId && !isConfirmed) {
+                // Parse orderId to number (remove ORD- prefix if present)
+                const orderIdNum = parseInt(orderId.replace(/\D/g, ''), 10);
+
+                if (!isNaN(orderIdNum) && orderIdNum > 0) {
+                    setIsConfirming(true);
+                    setConfirmError(null);
+
+                    try {
+                        console.log('🔄 [OrderSuccess] Confirming VNPay payment for order:', orderIdNum);
+                        
+                        // First try to confirm the payment
+                        const confirmResult = await confirmVNPayPayment(orderIdNum);
+
+                        if (confirmResult.success) {
+                            console.log('✅ [OrderSuccess] VNPay payment confirmed successfully');
+                            setIsConfirmed(true);
+                        }
+
+                        // Then check the payment status to get transaction details
+                        const statusResult = await checkVNPayPaymentStatus(orderIdNum);
+                        if (statusResult.success) {
+                            setPaymentInfo({
+                                status: statusResult.status,
+                                transactionId: statusResult.transactionId,
+                                paidAt: statusResult.paidAt,
+                            });
+                        }
+
+                        if (!confirmResult.success) {
+                            console.warn('⚠️ [OrderSuccess] VNPay payment confirmation warning:', confirmResult.message);
+                            // Don't set error for non-critical issues
+                        }
+                    } catch (error) {
+                        console.error('❌ [OrderSuccess] Error confirming VNPay payment:', error);
+                        setConfirmError('Không thể xác nhận thanh toán. Vui lòng liên hệ hỗ trợ.');
+                    } finally {
+                        setIsConfirming(false);
+                    }
+                }
+            }
+        };
+
+        confirmPayment();
+    }, [isFromVNPay, orderId, isConfirmed]);
+
+    // Animation effect
     useEffect(() => {
         // Animate check icon with spring
         Animated.spring(scaleAnim, {
@@ -133,16 +242,14 @@ export default function OrderSuccessScreen() {
 
             {/* Success Card */}
             <View style={styles.card}>
-                {/* Animated Check Icon */}
+                {/* Lottie Success Animation */}
                 <Animated.View
                     style={[
                         styles.iconWrapper,
                         { transform: [{ scale: scaleAnim }] },
                     ]}
                 >
-                    <View style={styles.iconCircle}>
-                        <Ionicons name="checkmark" size={44} color="#FFFFFF" />
-                    </View>
+                    <SuccessLottie size={150} />
                 </Animated.View>
 
                 {/* Content */}
@@ -156,14 +263,30 @@ export default function OrderSuccessScreen() {
                     ]}
                 >
                     <Text style={styles.title}>
-                        {isFromMoMo ? "Thanh toán thành công!" : "Đặt hàng thành công!"}
+                        {isFromVNPay ? "Thanh toán thành công!" : "Đặt hàng thành công!"}
                     </Text>
                     <Text style={styles.subtitle}>
-                        {isFromMoMo
-                            ? `Cảm ơn bạn, ${customerName}! Đơn hàng của bạn đã được thanh toán qua MoMo.`
+                        {isFromVNPay
+                            ? `Cảm ơn bạn, ${customerName}! Đơn hàng của bạn đã được thanh toán qua VNPay.`
                             : `Cảm ơn bạn, ${customerName}! Đơn hàng của bạn đã được xác nhận.`
                         }
                     </Text>
+
+                    {/* Loading indicator while confirming */}
+                    {isConfirming && (
+                        <View style={styles.confirmingContainer}>
+                            <ActivityIndicator size="small" color="#0066CC" />
+                            <Text style={styles.confirmingText}>Đang xác nhận thanh toán...</Text>
+                        </View>
+                    )}
+
+                    {/* Error message */}
+                    {confirmError && (
+                        <View style={styles.errorContainer}>
+                            <Ionicons name="alert-circle" size={16} color="#EF4444" />
+                            <Text style={styles.errorText}>{confirmError}</Text>
+                        </View>
+                    )}
 
                     {/* Order Info Box */}
                     <View style={styles.orderInfoBox}>
@@ -200,14 +323,20 @@ export default function OrderSuccessScreen() {
                             <Text style={styles.orderDetailLabel}>Thanh toán</Text>
                             <Text style={[
                                 styles.orderDetailValue,
-                                isFromMoMo && { color: '#10B981' }
+                                isFromVNPay && { color: '#10B981' }
                             ]}>
-                                {isFromMoMo
-                                    ? "Đã thanh toán (MoMo)"
+                                {isFromVNPay
+                                    ? "Đã thanh toán (VNPay)"
                                     : getPaymentMethodLabel(paymentMethod)
                                 }
                             </Text>
                         </View>
+                        {paymentInfo?.transactionId && (
+                            <View style={styles.orderDetailRow}>
+                                <Text style={styles.orderDetailLabel}>Mã giao dịch</Text>
+                                <Text style={styles.orderDetailValue}>{paymentInfo.transactionId}</Text>
+                            </View>
+                        )}
                     </View>
 
                     {/* Notice */}
@@ -300,6 +429,10 @@ const styles = StyleSheet.create({
             },
         }),
     },
+    lottieAnimation: {
+        width: 150,
+        height: 150,
+    },
     content: {
         alignItems: "center",
         width: "100%",
@@ -318,6 +451,39 @@ const styles = StyleSheet.create({
         lineHeight: 21,
         marginBottom: 24,
         paddingHorizontal: 10,
+    },
+
+    // Confirming state
+    confirmingContainer: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        backgroundColor: '#E6F0FF',
+        paddingHorizontal: 16,
+        paddingVertical: 10,
+        borderRadius: 10,
+        marginBottom: 16,
+        gap: 8,
+    },
+    confirmingText: {
+        fontSize: 13,
+        color: '#0066CC',
+    },
+
+    // Error state
+    errorContainer: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        backgroundColor: '#FEF2F2',
+        paddingHorizontal: 16,
+        paddingVertical: 10,
+        borderRadius: 10,
+        marginBottom: 16,
+        gap: 8,
+    },
+    errorText: {
+        fontSize: 13,
+        color: '#EF4444',
+        flex: 1,
     },
 
     // Order Info Box

@@ -1,38 +1,40 @@
 /**
- * useMoMoPayment Hook
- * ====================
- * Custom hook for handling MoMo payment flow
+ * useVNPayPayment Hook
+ * =====================
+ * Custom hook for handling VNPay payment flow
+ * Replaces useMoMoPayment hook
  */
 
-import { useState, useCallback, useRef } from 'react';
 import * as Linking from 'expo-linking';
+import { useCallback, useRef, useState } from 'react';
 import {
-    createMoMoPayment,
-    checkMoMoPaymentStatus,
-    simulateMoMoPayment,
-    CreatePaymentRequest,
-    PaymentStatusResponse,
-    MoMoPaymentType,
-} from '../services/momoService';
+    checkVNPayPaymentStatus,
+    confirmVNPayPayment,
+    createVNPayPayment,
+    CreateVNPayPaymentRequest,
+    simulateVNPayPayment,
+    VNPayStatusResponse,
+} from '../services/vnpayService';
 
 // =================== TYPES =====================
 
-export interface MoMoPaymentState {
+export interface VNPayPaymentState {
     isLoading: boolean;
     error: string | null;
     paymentUrl: string | null;
-    qrCodeUrl: string | null;
-    paymentStatus: PaymentStatusResponse | null;
+    paymentStatus: VNPayStatusResponse | null;
     currentOrderId: number | null;
+    vnpTxnRef: string | null;
 }
 
-export interface UseMoMoPaymentResult extends MoMoPaymentState {
-    initiatePayment: (request: CreatePaymentRequest, paymentType?: MoMoPaymentType) => Promise<boolean>;
-    verifyPayment: (orderId: number) => Promise<PaymentStatusResponse | null>;
+export interface UseVNPayPaymentResult extends VNPayPaymentState {
+    initiatePayment: (request: CreateVNPayPaymentRequest) => Promise<{ success: boolean; payUrl?: string }>;
+    verifyPayment: (orderId: number) => Promise<VNPayStatusResponse | null>;
     openPaymentUrl: () => Promise<boolean>;
-    simulatePayment: (orderId: number, amount: number) => Promise<PaymentStatusResponse>;
+    simulatePayment: (orderId: number, amount: number) => Promise<{ success: boolean; message: string }>;
+    confirmPayment: (orderId: number) => Promise<{ success: boolean; message: string }>;
     resetState: () => void;
-    pollPaymentStatus: (orderId: number, intervalMs?: number, maxAttempts?: number) => Promise<PaymentStatusResponse | null>;
+    pollPaymentStatus: (orderId: number, intervalMs?: number, maxAttempts?: number) => Promise<VNPayStatusResponse | null>;
 }
 
 // =================== CONSTANTS =====================
@@ -42,14 +44,14 @@ const MAX_POLL_ATTEMPTS = 60;  // 3 minutes max
 
 // =================== HOOK =====================
 
-export const useMoMoPayment = (): UseMoMoPaymentResult => {
-    const [state, setState] = useState<MoMoPaymentState>({
+export const useVNPayPayment = (): UseVNPayPaymentResult => {
+    const [state, setState] = useState<VNPayPaymentState>({
         isLoading: false,
         error: null,
         paymentUrl: null,
-        qrCodeUrl: null,
         paymentStatus: null,
         currentOrderId: null,
+        vnpTxnRef: null,
     });
 
     const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -58,7 +60,7 @@ export const useMoMoPayment = (): UseMoMoPaymentResult => {
     /**
      * Update state helper
      */
-    const updateState = useCallback((updates: Partial<MoMoPaymentState>) => {
+    const updateState = useCallback((updates: Partial<VNPayPaymentState>) => {
         setState(prev => ({ ...prev, ...updates }));
     }, []);
 
@@ -75,51 +77,58 @@ export const useMoMoPayment = (): UseMoMoPaymentResult => {
             isLoading: false,
             error: null,
             paymentUrl: null,
-            qrCodeUrl: null,
             paymentStatus: null,
             currentOrderId: null,
+            vnpTxnRef: null,
         });
     }, []);
 
     /**
-     * Initiate MoMo payment
+     * Initiate VNPay payment
      */
     const initiatePayment = useCallback(async (
-        request: CreatePaymentRequest,
-        paymentType: MoMoPaymentType = 'QR'
-    ): Promise<boolean> => {
+        request: CreateVNPayPaymentRequest
+    ): Promise<{ success: boolean; payUrl?: string }> => {
         updateState({ isLoading: true, error: null });
 
         try {
-            console.log('🚀 [MoMo Hook] Initiating payment:', request);
+            console.log('🚀 [VNPay Hook] Initiating payment:', request);
 
-            const response = await createMoMoPayment(request, paymentType);
+            const response = await createVNPayPayment(request);
 
             if (!response.success) {
                 updateState({
                     isLoading: false,
-                    error: response.message || 'Không thể tạo thanh toán MoMo',
+                    error: response.message || 'Không thể tạo thanh toán VNPay',
                 });
-                return false;
+                return { success: false };
             }
+
+            const payUrl = response.payUrl || null;
 
             updateState({
                 isLoading: false,
-                paymentUrl: response.payUrl || null,
-                qrCodeUrl: response.qrCodeUrl || response.payUrl || null,
+                paymentUrl: payUrl,
                 currentOrderId: request.orderId,
+                vnpTxnRef: response.vnpTxnRef || null,
             });
 
-            console.log('✅ [MoMo Hook] Payment initiated successfully');
-            return true;
+            console.log('✅ [VNPay Hook] Payment initiated successfully');
+            console.log('   - payUrl:', payUrl);
+            console.log('   - vnpTxnRef:', response.vnpTxnRef);
+
+            return {
+                success: true,
+                payUrl: payUrl || undefined,
+            };
         } catch (error) {
             const errorMessage = error instanceof Error ? error.message : 'Lỗi không xác định';
-            console.error('❌ [MoMo Hook] Initiate payment error:', errorMessage);
+            console.error('❌ [VNPay Hook] Initiate payment error:', errorMessage);
             updateState({
                 isLoading: false,
                 error: `Lỗi khởi tạo thanh toán: ${errorMessage}`,
             });
-            return false;
+            return { success: false };
         }
     }, [updateState]);
 
@@ -128,23 +137,23 @@ export const useMoMoPayment = (): UseMoMoPaymentResult => {
      */
     const verifyPayment = useCallback(async (
         orderId: number
-    ): Promise<PaymentStatusResponse | null> => {
+    ): Promise<VNPayStatusResponse | null> => {
         updateState({ isLoading: true });
 
         try {
-            console.log('🔍 [MoMo Hook] Verifying payment for order:', orderId);
-            const status = await checkMoMoPaymentStatus(orderId);
+            console.log('🔍 [VNPay Hook] Verifying payment for order:', orderId);
+            const status = await checkVNPayPaymentStatus(orderId);
 
             updateState({
                 isLoading: false,
                 paymentStatus: status,
             });
 
-            console.log('✅ [MoMo Hook] Payment verified:', status.paymentStatus);
+            console.log('✅ [VNPay Hook] Payment verified:', status.status);
             return status;
         } catch (error) {
             const errorMessage = error instanceof Error ? error.message : 'Lỗi không xác định';
-            console.error('❌ [MoMo Hook] Verify payment error:', errorMessage);
+            console.error('❌ [VNPay Hook] Verify payment error:', errorMessage);
             updateState({
                 isLoading: false,
                 error: `Lỗi kiểm tra trạng thái: ${errorMessage}`,
@@ -158,24 +167,25 @@ export const useMoMoPayment = (): UseMoMoPaymentResult => {
      */
     const openPaymentUrl = useCallback(async (): Promise<boolean> => {
         if (!state.paymentUrl) {
-            console.warn('⚠️ [MoMo Hook] No payment URL available');
+            console.warn('⚠️ [VNPay Hook] No payment URL available');
             return false;
         }
 
         try {
-            console.log('🌐 [MoMo Hook] Opening payment URL:', state.paymentUrl);
+            console.log('🌐 [VNPay Hook] Opening payment URL:', state.paymentUrl);
             const canOpen = await Linking.canOpenURL(state.paymentUrl);
 
             if (canOpen) {
                 await Linking.openURL(state.paymentUrl);
                 return true;
             } else {
-                updateState({ error: 'Không thể mở link thanh toán' });
-                return false;
+                // Try to open anyway
+                await Linking.openURL(state.paymentUrl);
+                return true;
             }
         } catch (error) {
             const errorMessage = error instanceof Error ? error.message : 'Lỗi không xác định';
-            console.error('❌ [MoMo Hook] Open URL error:', errorMessage);
+            console.error('❌ [VNPay Hook] Open URL error:', errorMessage);
             updateState({ error: `Lỗi mở trình duyệt: ${errorMessage}` });
             return false;
         }
@@ -188,17 +198,17 @@ export const useMoMoPayment = (): UseMoMoPaymentResult => {
         orderId: number,
         intervalMs: number = POLL_INTERVAL_MS,
         maxAttempts: number = MAX_POLL_ATTEMPTS
-    ): Promise<PaymentStatusResponse | null> => {
+    ): Promise<VNPayStatusResponse | null> => {
         return new Promise((resolve) => {
             pollCountRef.current = 0;
 
             const checkStatus = async () => {
                 pollCountRef.current++;
-                console.log(`🔄 [MoMo Hook] Polling attempt ${pollCountRef.current}/${maxAttempts}`);
+                console.log(`🔄 [VNPay Hook] Polling attempt ${pollCountRef.current}/${maxAttempts}`);
 
                 const status = await verifyPayment(orderId);
 
-                if (status?.isPaid || status?.paymentStatus === 'SUCCESS') {
+                if (status?.status === 'SUCCESS') {
                     if (pollTimerRef.current) {
                         clearInterval(pollTimerRef.current);
                         pollTimerRef.current = null;
@@ -207,7 +217,7 @@ export const useMoMoPayment = (): UseMoMoPaymentResult => {
                     return;
                 }
 
-                if (status?.paymentStatus === 'FAILED' || status?.paymentStatus === 'CANCELLED') {
+                if (status?.status === 'FAILED') {
                     if (pollTimerRef.current) {
                         clearInterval(pollTimerRef.current);
                         pollTimerRef.current = null;
@@ -240,26 +250,66 @@ export const useMoMoPayment = (): UseMoMoPaymentResult => {
     const simulatePayment = useCallback(async (
         orderId: number,
         amount: number
-    ): Promise<PaymentStatusResponse> => {
+    ): Promise<{ success: boolean; message: string }> => {
         updateState({ isLoading: true });
 
         try {
-            console.log('🧪 [MoMo Hook] Simulating payment for testing');
-            const result = await simulateMoMoPayment(orderId, amount);
+            console.log('🧪 [VNPay Hook] Simulating payment for testing');
+            const result = await simulateVNPayPayment(orderId, amount);
 
+            // Refresh status after simulate
+            const status = await checkVNPayPaymentStatus(orderId);
+            
             updateState({
                 isLoading: false,
-                paymentStatus: result,
+                paymentStatus: status,
             });
 
-            return result;
+            return {
+                success: result.success,
+                message: result.message,
+            };
         } catch (error) {
             const errorMessage = error instanceof Error ? error.message : 'Lỗi không xác định';
             updateState({
                 isLoading: false,
                 error: errorMessage,
             });
-            throw error;
+            return { success: false, message: errorMessage };
+        }
+    }, [updateState]);
+
+    /**
+     * Confirm payment manually
+     */
+    const confirmPayment = useCallback(async (
+        orderId: number
+    ): Promise<{ success: boolean; message: string }> => {
+        updateState({ isLoading: true });
+
+        try {
+            console.log('✅ [VNPay Hook] Confirming payment for order:', orderId);
+            const result = await confirmVNPayPayment(orderId);
+
+            // Refresh status after confirm
+            const status = await checkVNPayPaymentStatus(orderId);
+            
+            updateState({
+                isLoading: false,
+                paymentStatus: status,
+            });
+
+            return {
+                success: result.success,
+                message: result.message,
+            };
+        } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : 'Lỗi không xác định';
+            updateState({
+                isLoading: false,
+                error: errorMessage,
+            });
+            return { success: false, message: errorMessage };
         }
     }, [updateState]);
 
@@ -269,9 +319,10 @@ export const useMoMoPayment = (): UseMoMoPaymentResult => {
         verifyPayment,
         openPaymentUrl,
         simulatePayment,
+        confirmPayment,
         resetState,
         pollPaymentStatus,
     };
 };
 
-export default useMoMoPayment;
+export default useVNPayPayment;

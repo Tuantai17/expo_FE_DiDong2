@@ -6,9 +6,9 @@
  */
 
 import { Ionicons } from '@expo/vector-icons';
-import { useRouter } from 'expo-router';
+import { useFocusEffect, useRouter } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import {
     Dimensions,
     Image,
@@ -20,8 +20,11 @@ import {
     TouchableOpacity,
     View,
 } from 'react-native';
+import { API_BASE_URL } from '../../config/api.config';
 import { useAuth } from '../../context/AuthContext';
 import { useFavorite } from '../../context/FavoriteContext';
+import { countMyPayments } from '../../services/paymentHistoryService';
+import { userVoucherService } from '../../services/voucherService';
 import { showConfirmAlert } from '../../utils/alert';
 
 interface MenuItem {
@@ -39,6 +42,23 @@ export default function ProfileScreen(): React.JSX.Element {
 
     const [dimensions, setDimensions] = useState<ScaledSize>(
         Dimensions.get('window')
+    );
+    const [voucherCount, setVoucherCount] = useState(0);
+    const [paymentCount, setPaymentCount] = useState(0);
+
+    // Fetch voucher count and payment count when screen focuses
+    useFocusEffect(
+        useCallback(() => {
+            if (isAuthenticated && user?.id) {
+                userVoucherService.countUnusedVouchers(user.id)
+                    .then(count => setVoucherCount(count))
+                    .catch(() => setVoucherCount(0));
+                
+                countMyPayments()
+                    .then(count => setPaymentCount(count))
+                    .catch(() => setPaymentCount(0));
+            }
+        }, [isAuthenticated, user?.id])
     );
 
     useEffect(() => {
@@ -71,10 +91,24 @@ export default function ProfileScreen(): React.JSX.Element {
         },
         {
             id: 2,
-            icon: 'bag-outline',
-            title: 'Đơn hàng của tôi',
-            subtitle: 'Xem lịch sử đơn hàng',
-            onPress: () => router.push('/account/my-orders'),
+            icon: 'pricetag-outline',
+            title: 'Mã giảm giá',
+            subtitle: 'Xem các mã khuyến mãi',
+            onPress: () => router.push('/account/vouchers'),
+        },
+        {
+            id: 8,
+            icon: 'receipt-outline',
+            title: 'Lịch sử thanh toán',
+            subtitle: 'Xem các giao dịch đã thanh toán',
+            onPress: () => router.push('/account/payment-history'),
+        },
+        {
+            id: 7,
+            icon: 'gift-outline',
+            title: 'Vòng Quay May Mắn',
+            subtitle: 'Quay để nhận voucher miễn phí',
+            onPress: () => router.push('/features/spin-wheel'),
         },
         {
             id: 3,
@@ -85,38 +119,24 @@ export default function ProfileScreen(): React.JSX.Element {
         },
         {
             id: 4,
-            icon: 'card-outline',
-            title: 'Phương thức thanh toán',
-            subtitle: 'Quản lý các cách thanh toán',
-            onPress: () => console.log('Payment Methods'),
-        },
-        {
-            id: 5,
-            icon: 'heart-outline',
-            title: 'Yêu thích',
-            subtitle: 'Các sản phẩm yêu thích của bạn',
-            onPress: () => router.push('/(main)/favorite'),
-        },
-        {
-            id: 6,
             icon: 'notifications-outline',
             title: 'Thông báo',
             subtitle: 'Cài đặt thông báo',
             onPress: () => console.log('Notifications'),
         },
         {
-            id: 7,
+            id: 5,
             icon: 'settings-outline',
             title: 'Cài đặt',
             subtitle: 'Tùy chỉnh ứng dụng',
             onPress: () => router.push('/account/settings'),
         },
         {
-            id: 8,
+            id: 6,
             icon: 'help-circle-outline',
             title: 'Trợ giúp & Hỗ trợ',
             subtitle: 'Nhận hỗ trợ với tài khoản của bạn',
-            onPress: () => console.log('Help'),
+            onPress: () => router.push('/account/support' as any),
         },
     ];
 
@@ -156,15 +176,25 @@ export default function ProfileScreen(): React.JSX.Element {
                 {/* User Info Card */}
                 <View style={[styles.userCard, { marginHorizontal: width * 0.05 }]}>
                     <View style={styles.avatarContainer}>
-                        <Image
-                            source={require('../../assets/images/home/user.png')}
-                            style={[
-                                styles.avatar,
-                                { width: width * 0.22, height: width * 0.22 },
-                            ]}
-                        />
+                        {user?.avatar ? (
+                            <Image
+                                source={{ uri: `${API_BASE_URL}${user.avatar}` }}
+                                style={[
+                                    styles.avatar,
+                                    { width: width * 0.22, height: width * 0.22 },
+                                ]}
+                            />
+                        ) : (
+                            <Image
+                                source={require('../../assets/images/home/user.png')}
+                                style={[
+                                    styles.avatar,
+                                    { width: width * 0.22, height: width * 0.22 },
+                                ]}
+                            />
+                        )}
                         {isAuthenticated && (
-                            <TouchableOpacity style={styles.editAvatarBtn}>
+                            <TouchableOpacity style={styles.editAvatarBtn} onPress={() => router.push('/account/edit-profile')}>
                                 <Ionicons name="camera" size={18} color="#FFFFFF" />
                             </TouchableOpacity>
                         )}
@@ -232,9 +262,34 @@ export default function ProfileScreen(): React.JSX.Element {
                             <Text style={styles.statLabel}>Yêu thích</Text>
                         </TouchableOpacity>
                         <View style={styles.statDivider} />
-                        <TouchableOpacity style={styles.statItem}>
-                            <Ionicons name="star-outline" size={22} color="#F59E0B" />
-                            <Text style={styles.statLabel}>Đánh giá</Text>
+                        <TouchableOpacity
+                            style={styles.statItem}
+                            onPress={() => router.push('/account/vouchers')}
+                        >
+                            <View style={styles.statBadge}>
+                                <Ionicons name="pricetag" size={22} color="#8B5CF6" />
+                                {voucherCount > 0 && (
+                                    <View style={[styles.statCountBadge, { backgroundColor: '#8B5CF6' }]}>
+                                        <Text style={styles.statCountText}>{voucherCount}</Text>
+                                    </View>
+                                )}
+                            </View>
+                            <Text style={styles.statLabel}>Voucher</Text>
+                        </TouchableOpacity>
+                        <View style={styles.statDivider} />
+                        <TouchableOpacity
+                            style={styles.statItem}
+                            onPress={() => router.push('/account/payment-history')}
+                        >
+                            <View style={styles.statBadge}>
+                                <Ionicons name="receipt" size={22} color="#6366F1" />
+                                {paymentCount > 0 && (
+                                    <View style={[styles.statCountBadge, { backgroundColor: '#6366F1' }]}>
+                                        <Text style={styles.statCountText}>{paymentCount}</Text>
+                                    </View>
+                                )}
+                            </View>
+                            <Text style={styles.statLabel}>Thanh toán</Text>
                         </TouchableOpacity>
                     </View>
                 )}

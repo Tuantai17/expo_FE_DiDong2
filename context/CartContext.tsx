@@ -12,6 +12,7 @@ import {
   clearCartApi,
   getCartByUserApi,
   getImageUrl,
+  removeCartItemByIdApi,
   removeFromCartApi,
 } from "../services/api";
 import { useAuth } from "./AuthContext";
@@ -19,8 +20,9 @@ import { useAuth } from "./AuthContext";
 // =================== TYPES =====================
 
 export type CartItem = {
-  id: string;           // product id (string để tương thích)
-  productId: number;    // product id (number cho API)
+  id: string;             // product id (string để tương thích)
+  productId: number;      // product id (number cho API)
+  cartItemId?: number;    // cart item id từ backend (để xóa chính xác)
   name: string;
   price: number;
   image: any;
@@ -36,7 +38,7 @@ type CartContextType = {
   addToCart: (item: Omit<CartItem, "qty"> & { quantity?: number }) => Promise<void>;
   changeQty: (id: string, size: string, delta: 1 | -1) => void;
   removeItem: (id: string, size: string) => Promise<void>;
-  clearCart: () => void;
+  clearCart: () => Promise<void>;
   refreshCart: () => Promise<void>;
 };
 
@@ -71,7 +73,7 @@ export function CartProvider({ children }: { children: ReactNode }) {
 
       if (response && response.items && Array.isArray(response.items)) {
         // Convert API response to CartItem format
-        // Backend CartItemDTO uses: productTitle, productImage, price, quantity
+        // Backend CartItemDTO uses: id (cartItemId), productId, productTitle, productImage, price, quantity
         // Filter out invalid items (no productId, no price, no name)
         const cartItems: CartItem[] = response.items
           .filter((item: any) => {
@@ -90,6 +92,7 @@ export function CartProvider({ children }: { children: ReactNode }) {
           .map((item: any) => ({
             id: String(item.productId),
             productId: item.productId,
+            cartItemId: item.id, // Cart item ID từ backend
             name: item.productTitle || item.productName || "Sản phẩm",
             price: item.price ?? item.productPrice ?? 0,
             image: item.productImage || item.productPhoto
@@ -149,6 +152,8 @@ export function CartProvider({ children }: { children: ReactNode }) {
           discount: 0,
         });
         console.log("✅ Synced to backend cart");
+        // Refresh cart để lấy cartItemId mới
+        await refreshCart();
       } catch (error: any) {
         console.log("❌ Error syncing to backend:", error.message);
         // Không rollback, vì local cart vẫn hoạt động
@@ -176,21 +181,39 @@ export function CartProvider({ children }: { children: ReactNode }) {
   // =================== REMOVE ITEM =====================
 
   const removeItem = async (id: string, size: string) => {
-    // Sync với backend TRƯỚC, sau đó mới update local state
+    // Tìm item để lấy cartItemId
+    const itemToRemove = items.find((item) => item.id === id && item.size === size);
+
+    // Sync với backend TRƯỚC
     if (isAuthenticated && user?.id) {
       try {
-        await removeFromCartApi(user.id, parseInt(id));
-        console.log("✅ Removed from backend cart");
-        // Chỉ xóa local state sau khi backend thành công
+        // Ưu tiên sử dụng cartItemId nếu có
+        if (itemToRemove?.cartItemId) {
+          console.log("🗑️ Calling DELETE /api/carts/items/" + itemToRemove.cartItemId);
+          const result = await removeCartItemByIdApi(itemToRemove.cartItemId);
+          console.log("✅ Backend response:", result);
+        } else {
+          // Fallback: sử dụng productId
+          console.log("🗑️ Calling DELETE /api/carts/" + user.id + "/remove/" + id);
+          await removeFromCartApi(user.id, parseInt(id));
+          console.log("✅ Removed from backend cart using productId:", id);
+        }
+
+        // Xóa local state SAU KHI backend thành công
         setItems((prev) =>
           prev.filter((item) => !(item.id === id && item.size === size))
         );
+
+        // Refresh cart từ backend để đảm bảo đồng bộ
+        console.log("🔄 Refreshing cart from backend...");
+        await refreshCart();
+        console.log("✅ Cart refreshed");
+
       } catch (error: any) {
         console.log("❌ Error removing from backend:", error.message);
-        // Vẫn xóa local để UX tốt, nhưng log lỗi
-        setItems((prev) =>
-          prev.filter((item) => !(item.id === id && item.size === size))
-        );
+        // Nếu lỗi là 404 (item không tồn tại), vẫn xóa local
+        // Nếu lỗi khác, refresh để lấy state đúng từ backend
+        await refreshCart();
       }
     } else {
       // Không đăng nhập, chỉ xóa local
@@ -203,17 +226,42 @@ export function CartProvider({ children }: { children: ReactNode }) {
   // =================== CLEAR CART =====================
 
   const clearCart = async () => {
-    // Sync với backend nếu đã đăng nhập
+    console.log("🗑️ [CartContext] clearCart() called, items:", items.length);
+    
+    // Clear local state IMMEDIATELY for responsive UI
+    const previousItems = [...items];
+    setItems([]);
+    
+    // Sync with backend if logged in
     if (isAuthenticated && user?.id) {
       try {
+        console.log("📤 [CartContext] Calling clearCartApi for user:", user.id);
         await clearCartApi(user.id);
-        console.log("✅ Cleared backend cart");
+        console.log("✅ [CartSuccess] Cart cleared and refreshed");
       } catch (error: any) {
-        console.log("❌ Error clearing backend cart:", error.message);
+        console.log("⚠️ [CartContext] clearCartApi failed:", error.message);
+        
+        // If clear API fails, try to remove items one by one
+        console.log("🔄 [CartContext] Attempting to remove items individually...");
+        try {
+          for (const item of previousItems) {
+            if (item.cartItemId) {
+              try {
+                await removeCartItemByIdApi(item.cartItemId);
+                console.log("✅ [CartContext] Removed item:", item.cartItemId);
+              } catch (e: any) {
+                console.log("⚠️ [CartContext] Could not remove item:", item.cartItemId, e.message);
+              }
+            }
+          }
+          console.log("✅ [CartSuccess] Cart cleared and refreshed");
+        } catch (fallbackError: any) {
+          console.log("❌ [CartContext] Fallback removal also failed:", fallbackError.message);
+        }
       }
+    } else {
+      console.log("✅ [CartSuccess] ClearCart() cancelled");
     }
-    // Luôn clear local state
-    setItems([]);
   };
 
   // =================== CONTEXT VALUE =====================
